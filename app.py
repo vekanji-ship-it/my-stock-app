@@ -62,7 +62,7 @@ st.markdown("""
 class DataEngine:
     def __init__(self):
         self.tz = pytz.timezone('Asia/Taipei')
-        # 內建台股名稱翻譯字典 (確保顯示中文)
+        # 內建台股名稱翻譯字典
         self.name_map = {
             "2330": "台積電", "2317": "鴻海", "2454": "聯發科", "2603": "長榮", "2609": "陽明",
             "2615": "萬海", "3231": "緯創", "2382": "廣達", "2356": "英業達", "2303": "聯電",
@@ -81,7 +81,6 @@ class DataEngine:
         return dt_time(9, 0) <= now.time() <= dt_time(13, 30)
 
     def get_stock_name(self, ticker):
-        # 移除 .TW 後綴來比對字典
         clean_ticker = ticker.replace('.TW', '')
         return self.name_map.get(clean_ticker, ticker)
 
@@ -106,7 +105,6 @@ class DataEngine:
                 change = price - prev
                 pct = (change / prev) * 100
             
-            # 使用自定義中文名稱
             clean_ticker = ticker.replace('.TW', '')
             display_name = _self.name_map.get(clean_ticker, clean_ticker)
             
@@ -141,12 +139,13 @@ class DataEngine:
             if q: res[name] = q
         return res
 
+    # === [修改重點] 增加 interval 和 period 參數 ===
     @st.cache_data(ttl=60)
-    def fetch_kline(_self, ticker):
+    def fetch_kline(_self, ticker, interval="1d", period="3mo"):
         if not ticker.endswith('.TW'): ticker += '.TW'
         try:
             stock = yf.Ticker(ticker)
-            df = stock.history(period="3mo", interval="1d")
+            df = stock.history(period=period, interval=interval)
             df.reset_index(inplace=True)
             df['Date'] = df['Date'].dt.tz_localize(None)
             df.columns = [c.lower() for c in df.columns]
@@ -224,11 +223,9 @@ if 'member_tier' not in st.session_state: st.session_state.member_tier = "一般
 if 'line_token' not in st.session_state: st.session_state.line_token = ""
 if 'line_uid' not in st.session_state: st.session_state.line_uid = ""
 
-# 初始化機器人：⚠️ 啟動時強制更新為台積電真實現價
 if 'bot_instances' not in st.session_state:
     default_code = "2330"
     init_q = engine.fetch_quote(default_code)
-    # 如果抓得到就用現價，抓不到才用預設值，避免1000
     init_price = float(init_q['price']) if init_q else 1000.0
     
     st.session_state.bot_instances = [
@@ -236,7 +233,6 @@ if 'bot_instances' not in st.session_state:
         for i in range(5)
     ]
 
-# 回調：當代號變更，自動抓取現價並填入
 def on_bot_code_change(i):
     key = f"bc_{i}"
     code = st.session_state[key]
@@ -256,7 +252,7 @@ def auto_fill_name():
 def plot_chinese_chart(df, title, trigger_price=None):
     fig = go.Figure(data=[go.Candlestick(
         x=df['date'], open=df['open'], high=df['high'], low=df['low'], close=df['close'],
-        name='日K',
+        name='K線',
         increasing_line_color='#d32f2f', decreasing_line_color='#2e7d32'
     )])
     fig.update_traces(hovertemplate='<b>日期</b>: %{x}<br><b>開盤</b>: %{open:.2f}<br><b>最高</b>: %{high:.2f}<br><b>最低</b>: %{low:.2f}<br><b>收盤</b>: %{close:.2f}<extra></extra>')
@@ -297,7 +293,6 @@ def render_dashboard():
         ticker = c_search.text_input("輸入代號 (例如 2330)", "2330")
         
         q = engine.fetch_quote(ticker)
-        df = engine.fetch_kline(ticker)
         profile = engine.fetch_stock_profile(ticker)
         
         if q:
@@ -313,8 +308,20 @@ def render_dashboard():
             tab1, tab2, tab3 = st.tabs(["📈 技術走勢", "📋 基本資料", "🔗 深層數據 (Anue)"])
             
             with tab1:
-                if not df.empty:
-                    st.plotly_chart(plot_chinese_chart(df, f"{q['name']} ({ticker}) 技術線圖"), use_container_width=True, key="dash_chart")
+                # === [修改重點] K 線週期切換 ===
+                c_k_opt, c_k_void = st.columns([1, 4])
+                k_type = c_k_opt.radio("K線週期", ["日K", "週K", "月K"], horizontal=True, label_visibility="collapsed")
+                
+                if k_type == "日K": k_inv, k_prd = "1d", "3mo"
+                elif k_type == "週K": k_inv, k_prd = "1wk", "1y"
+                else: k_inv, k_prd = "1mo", "5y"
+                
+                df_k = engine.fetch_kline(ticker, interval=k_inv, period=k_prd)
+                
+                if not df_k.empty:
+                    st.plotly_chart(plot_chinese_chart(df_k, f"{q['name']} ({ticker}) - {k_type}線圖"), use_container_width=True, key="dash_chart")
+                else:
+                    st.warning("查無此週期 K 線資料")
             
             with tab2:
                 if profile:
@@ -429,7 +436,6 @@ def render_bot():
             st.sidebar.success("成功")
         else: st.sidebar.error("失敗")
         
-    # 📢 新增：收盤損益報告按鈕
     if c_line_report.button("📢 發送收盤報告"):
         if not st.session_state.line_token:
             st.sidebar.error("請先設定 Token")
@@ -442,7 +448,6 @@ def render_bot():
                     q = engine.fetch_quote(bot['code'])
                     if q:
                         curr = q['price']
-                        # 模擬損益：(現價 - 觸發價) * 張數 * 1000
                         pl = (curr - bot['price']) * bot['qty'] * 1000
                         total_pl += pl
                         name = engine.get_stock_name(bot['code'])
@@ -470,24 +475,14 @@ def render_bot():
             
             with c_chart:
                 disabled = bot['active']
-                
-                # 4 欄位
                 c_1, c_2, c_3, c_4 = st.columns([1.5, 1.5, 1.5, 1.5])
                 
-                # 1. 代號
                 new_code = c_1.text_input(f"代號 #{i+1}", bot['code'], key=f"bc_{i}", disabled=disabled, on_change=on_bot_code_change, args=(i,))
-                
-                # 2. 現價 (唯讀)
                 cur_price_display = st.session_state.bot_instances[i]['cur_price']
                 c_2.number_input(f"現價 (參考)", value=float(cur_price_display), disabled=True, key=f"bcp_{i}")
-                
-                # 3. 觸發價
                 new_price = c_3.number_input(f"觸發價 #{i+1}", value=float(st.session_state.bot_instances[i]['price']), key=f"bp_{i}", disabled=disabled)
-                
-                # 4. 張數
                 new_qty = c_4.number_input(f"張數 #{i+1}", value=bot['qty'], key=f"bq_{i}", disabled=disabled)
                 
-                # 圖表
                 df_bot = engine.fetch_kline(new_code)
                 if not df_bot.empty:
                     name = engine.get_stock_name(new_code)
