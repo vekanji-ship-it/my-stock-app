@@ -6,3 +6,4 @@ yfinance
 pytz
 lxml
 html5lib
+feedparser
