@@ -9,57 +9,50 @@ import requests
 import feedparser
 
 # ==========================================
-# 1. 系統初始化 & 原版漂亮 CSS
+# 1. 系統初始化 & CSS (保留原版漂亮風格)
 # ==========================================
-st.set_page_config(page_title="股市特務 X - 完美整合版", page_icon="📈", layout="wide")
+st.set_page_config(page_title="股市特務 X", page_icon="🕵️", layout="wide")
 
 st.markdown("""
     <style>
-    /* 全局設定 */
     .stApp { background-color: #f4f7f6; font-family: 'Microsoft JhengHei', sans-serif; }
-    
-    /* 漂亮的導航條 */
     .nav-bar { 
         background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); 
         padding: 15px; border-radius: 0 0 10px 10px; margin-bottom: 20px; color: white;
-        box-shadow: 0 4px 10px rgba(0,0,0,0.1); display: flex; justify-content: space-between; align-items: center;
+        box-shadow: 0 4px 10px rgba(0,0,0,0.1);
     }
-    .nav-title { font-size: 24px; font-weight: bold; letter-spacing: 1px; }
-    .nav-info { font-size: 14px; background: rgba(255,255,255,0.2); padding: 5px 12px; border-radius: 20px; }
-    
-    /* 卡片風格 */
-    .card { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); margin-bottom: 15px; border: 1px solid #eee; }
-    .grid-card { background: white; padding: 20px; border-radius: 12px; border-left: 5px solid #2196f3; box-shadow: 0 2px 8px rgba(0,0,0,0.05); margin-bottom: 15px; }
-    
-    /* 顏色與標籤 */
+    .nav-title { font-size: 26px; font-weight: bold; letter-spacing: 1px; }
+    .card { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); margin-bottom: 15px; }
+    .bot-card { border: 1px solid #ddd; border-radius: 10px; padding: 20px; margin-bottom: 15px; background: white; border-left: 5px solid #4caf50; }
     .up { color: #d32f2f; font-weight: bold; } 
     .down { color: #2e7d32; font-weight: bold; }
-    .tag-sell { background: #ffebee; color: #c62828; padding: 2px 8px; border-radius: 4px; font-weight: bold; font-size:12px; }
-    .tag-buy { background: #e8f5e9; color: #2e7d32; padding: 2px 8px; border-radius: 4px; font-weight: bold; font-size:12px; }
-    
+    .news-item { padding: 10px; border-bottom: 1px solid #eee; }
+    .news-link { text-decoration: none; color: #333; font-weight: bold; }
     #MainMenu {visibility: hidden;} footer {visibility: hidden;}
     </style>
     """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. 核心數據引擎 (DataEngine)
+# 2. 核心數據引擎 (完整保留)
 # ==========================================
 class DataEngine:
     def __init__(self):
         self.tz = pytz.timezone('Asia/Taipei')
         self.name_map = {
             "2330": "台積電", "2317": "鴻海", "2454": "聯發科", "2603": "長榮", "0050": "元大台灣50",
-            "0056": "元大高股息", "00878": "國泰永續高股息", "00632R": "元大台灣50反1"
+            "0056": "元大高股息", "00878": "國泰永續高股息", "00632R": "元大台灣50反1",
+            "^TWII": "加權指數", "^TWOII": "櫃買指數", "^DJI": "道瓊", "^SOX": "費半"
         }
+        # 模擬掃描清單
         self.watch_list = ["2330", "2317", "2454", "2603", "2609", "2615", "3231", "2382", "2356", "2303", "1513", "1519"]
 
-    def get_name(self, code):
-        clean = code.replace('.TW', '')
-        return self.name_map.get(clean, code)
+    def get_stock_name(self, ticker):
+        clean = ticker.replace('.TW', '')
+        return self.name_map.get(clean, ticker)
 
     @st.cache_data(ttl=10)
     def fetch_quote(_self, ticker):
-        if not ticker.endswith('.TW') and ticker.isdigit(): ticker += '.TW'
+        if not ticker.endswith('.TW') and not ticker.startswith('^') and ticker.isdigit(): ticker += '.TW'
         try:
             stock = yf.Ticker(ticker)
             df = stock.history(period='1d', interval='1m')
@@ -68,17 +61,12 @@ class DataEngine:
             price = float(df.iloc[-1]['Close'])
             change = price - df.iloc[-2]['Close'] if len(df) > 1 else 0
             pct = (change / df.iloc[-2]['Close']) * 100 if len(df) > 1 else 0
-            return {"name": _self.get_name(ticker.replace('.TW','')), "price": price, "change": change, "pct": pct, "vol": df.iloc[-1].get('Volume', 0)}
+            return {
+                "name": _self.get_stock_name(ticker.replace('.TW', '')),
+                "price": price, "change": change, "pct": pct, "vol": df.iloc[-1].get('Volume', 0),
+                "open": df.iloc[-1]['Open'], "high": df.iloc[-1]['High'], "low": df.iloc[-1]['Low']
+            }
         except: return None
-
-    @st.cache_data(ttl=60)
-    def fetch_indices(_self):
-        targets = ["^TWII", "^TWOII", "^DJI", "^IXIC", "^SOX"]
-        res = {}
-        for sym in targets:
-            q = _self.fetch_quote(sym)
-            if q: res[sym] = q # Use symbol as key temporarily
-        return res
 
     @st.cache_data(ttl=60)
     def fetch_kline(_self, ticker, interval="1d", period="3mo"):
@@ -93,46 +81,65 @@ class DataEngine:
             return df
         except: return pd.DataFrame()
 
-    @st.cache_data(ttl=60)
-    def scan_market(_self, strategy):
-        data = []
-        for c in _self.watch_list:
-            q = _self.fetch_quote(c)
-            if q: data.append({"代號": c, "名稱": q['name'], "現價": q['price'], "漲跌幅": q['pct'], "成交量": q['vol']})
-        df = pd.DataFrame(data)
-        if df.empty: return df
-        if strategy == "漲幅排行 (飆股)": return df.sort_values("漲跌幅", ascending=False)
-        elif strategy == "爆量強勢股": return df.sort_values("成交量", ascending=False)
-        else: return df.sort_values("漲跌幅", ascending=True)
-
-    def send_line(self, token, uid, msg):
-        try:
-            r = requests.post("https://api.line.me/v2/bot/message/push", 
-                headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
-                json={"to": uid, "messages": [{"type": "text", "text": msg}]})
-            return r.status_code == 200
-        except: return False
+    @st.cache_data(ttl=300)
+    def fetch_indices(_self):
+        targets = ["^TWII", "^TWOII", "^DJI", "^SOX"]
+        res = {}
+        for sym in targets:
+            q = _self.fetch_quote(sym)
+            if q: res[q['name']] = q
+        return res
 
     @st.cache_data(ttl=300)
-    def get_news(_self):
+    def fetch_stock_profile(_self, ticker):
+        if not ticker.endswith('.TW') and ticker.isdigit(): ticker += '.TW'
+        try:
+            stock = yf.Ticker(ticker)
+            info = stock.info
+            return {"pe": info.get('trailingPE'), "eps": info.get('trailingEps'), "yield": info.get('dividendYield', 0)*100}
+        except: return None
+
+    @st.cache_data(ttl=300)
+    def get_real_news(_self):
         try:
             feed = feedparser.parse("https://news.google.com/rss/search?q=台股&hl=zh-TW&gl=TW&ceid=TW:zh-Hant")
             return [{"title": e.title, "link": e.link, "time": f"{e.published_parsed.tm_hour:02}:{e.published_parsed.tm_min:02}"} for e in feed.entries[:5]]
         except: return []
 
-    def fetch_stock_profile(self, ticker): # 簡易基本面
+    @st.cache_data(ttl=60)
+    def scan_market(_self, strategy):
+        data_list = []
+        for code in _self.watch_list:
+            q = _self.fetch_quote(code)
+            if q:
+                data_list.append({
+                    "代號": code, "名稱": q['name'], "股價": q['price'], 
+                    "漲跌幅": q['pct'], "成交量": q['vol'], "abs_change": abs(q['pct'])
+                })
+        res = pd.DataFrame(data_list)
+        if res.empty: return res
+        
+        if strategy == "漲幅排行 (飆股)": return res.sort_values(by="漲跌幅", ascending=False)
+        elif strategy == "爆量強勢股": return res.sort_values(by="成交量", ascending=False)
+        elif strategy == "跌深反彈": return res.sort_values(by="漲跌幅", ascending=True)
+        return res
+
+    def send_line_push(self, token, user_id, message):
         try:
-            stock = yf.Ticker(ticker + ".TW")
-            info = stock.info
-            return {"pe": info.get('trailingPE'), "eps": info.get('trailingEps'), "yield": info.get('dividendYield', 0)*100}
-        except: return None
+            r = requests.post("https://api.line.me/v2/bot/message/push", 
+                headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
+                json={"to": user_id, "messages": [{"type": "text", "text": message}]})
+            return r.status_code == 200
+        except: return False
 
 engine = DataEngine()
 
-# 繪圖
-def plot_kline(df, title):
-    x = df['datetime'] if 'datetime' in df.columns else df['date']
-    fig = go.Figure(data=[go.Candlestick(x=x, open=df['open'], high=df['high'], low=df['low'], close=df['close'], increasing_line_color='#d32f2f', decreasing_line_color='#2e7d32')])
+# 繪圖函數
+def plot_chart(df, title, levels=None):
+    x_col = 'datetime' if 'datetime' in df.columns else 'date'
+    fig = go.Figure(data=[go.Candlestick(x=df[x_col], open=df['open'], high=df['high'], low=df['low'], close=df['close'], increasing_line_color='#d32f2f', decreasing_line_color='#2e7d32')])
+    if levels:
+        for p in levels: fig.add_hline(y=p, line_dash="dot", line_color="gray", line_width=1)
     fig.update_layout(title=title, height=350, xaxis_rangeslider_visible=False, margin=dict(l=10,r=10,t=30,b=10), paper_bgcolor='white', plot_bgcolor='white')
     return fig
 
@@ -146,254 +153,230 @@ def calc_fee(p, q, action, disc):
 # ==========================================
 # 3. Session 狀態
 # ==========================================
+if 'portfolio' not in st.session_state: st.session_state.portfolio = [{"code": "2330", "name": "台積電", "cost": 980, "qty": 1000}]
+# 網格戰神專用狀態
 if 'login_status' not in st.session_state: st.session_state.login_status = False
-if 'user_role' not in st.session_state: st.session_state.user_role = ""
-if 'broker' not in st.session_state: st.session_state.broker = ""
-if 'strategies' not in st.session_state: st.session_state.strategies = [] 
-if 'portfolio' not in st.session_state: st.session_state.portfolio = [{"code": "2330", "name": "台積電", "cost": 900.0, "qty": 1000}]
+if 'member_tier' not in st.session_state: st.session_state.member_tier = "一般會員"
+if 'grid_strategies' not in st.session_state: st.session_state.grid_strategies = []
 if 'line_token' not in st.session_state: st.session_state.line_token = ""
 if 'line_uid' not in st.session_state: st.session_state.line_uid = ""
 
 # ==========================================
-# 4. 共用模組：小金庫 (保留功能)
-# ==========================================
-def render_treasury():
-    st.markdown("### 💰 台股小金庫")
-    st.markdown("<div class='card'>", unsafe_allow_html=True)
-    
-    if st.session_state.portfolio:
-        data = []
-        total_p = 0
-        for i in st.session_state.portfolio:
-            q = engine.fetch_quote(i['code'])
-            curr = q['price'] if q else i['cost']
-            prof = (curr - i['cost']) * i['qty']
-            total_p += prof
-            data.append({"代號": i['code'], "名稱": i['name'], "成本": i['cost'], "現價": curr, "股數": i['qty'], "損益": prof})
-        
-        c1, c2 = st.columns([1, 3])
-        c1.metric("總損益", f"${total_p:,.0f}", delta=total_p)
-        c2.dataframe(pd.DataFrame(data).style.format({"成本":"{:.1f}","現價":"{:.1f}","損益":"{:.0f}"}), use_container_width=True)
-    else: st.info("無庫存資料")
-
-    tab1, tab2 = st.tabs(["➕ 新增", "🗑️ 刪除"])
-    with tab1:
-        c1, c2, c3, c4 = st.columns(4)
-        nc = c1.text_input("代號", key="n_c")
-        nn = c2.text_input("名稱", key="n_n")
-        nco = c3.number_input("成本", key="n_co")
-        nq = c4.number_input("股數", 1000, key="n_q")
-        if st.button("加入"):
-            st.session_state.portfolio.append({"code": nc, "name": nn if nn else nc, "cost": nco, "qty": nq})
-            st.rerun()
-    with tab2:
-        if st.session_state.portfolio:
-            opts = [f"{x['code']} {x['name']}" for x in st.session_state.portfolio]
-            dels = st.multiselect("選擇刪除", opts)
-            if st.button("確認刪除") and dels:
-                st.session_state.portfolio = [x for x in st.session_state.portfolio if f"{x['code']} {x['name']}" not in dels]
-                st.rerun()
-    st.markdown("</div>", unsafe_allow_html=True)
-
-# ==========================================
-# 5. 模組 A：股市情報站 (保留完整功能)
+# 4. 模組一：股市情報站 (保留完整功能)
 # ==========================================
 def render_dashboard():
-    st.markdown(f"""
-    <div class='nav-bar'>
-        <span class='nav-title'>📊 股市情報站</span>
-        <span class='nav-info'>👤 一般會員</span>
-    </div>""", unsafe_allow_html=True)
-
-    c_main, c_side = st.columns([2.5, 1.5])
+    st.markdown("<div class='nav-bar'><span class='nav-title'>🕵️ 股市情報站</span></div>", unsafe_allow_html=True)
+    col_main, col_news = st.columns([3, 2])
     
-    with c_main:
-        # 大盤
-        st.subheader("🌍 市場行情")
-        ind = engine.fetch_indices()
-        cols = st.columns(4)
-        names = ["^TWII", "^TWOII", "^DJI", "^SOX"]
-        labels = ["加權", "櫃買", "道瓊", "費半"]
-        for i, sym in enumerate(names):
-            if sym in ind:
-                q = ind[sym]
-                cols[i].metric(labels[i], f"{q['price']:,.0f}", f"{q['pct']:.2f}%")
+    with col_main:
+        # A. 大盤
+        st.subheader("📊 市場行情")
+        indices = engine.fetch_indices()
+        c_grid = st.columns(4)
+        idx = 0
+        for name, data in indices.items():
+            if idx < 4:
+                color = "up" if data['change'] > 0 else "down"
+                c_grid[idx].metric(name, f"{data['price']:,.0f}", f"{data['pct']:.2f}%")
+                idx += 1
         st.divider()
-
-        # 偵查
-        st.subheader("🔎 個股偵查")
-        tk = st.text_input("輸入代號", "2330")
-        q = engine.fetch_quote(tk)
+        
+        # B. 個股偵查
+        st.subheader("🔎 全方位個股偵查")
+        ticker = st.text_input("輸入代號", "2330")
+        q = engine.fetch_quote(ticker)
+        prof = engine.fetch_stock_profile(ticker)
         
         if q:
-            cc = "up" if q['change']>0 else "down"
-            st.markdown(f"""
-            <div class='card'>
-                <h2 style='margin:0'>{q['name']} {q['price']} <span class='{cc}'>{q['change']:+.2f} ({q['pct']:+.2f}%)</span></h2>
-                <small>量: {q['vol']:,}</small>
-            </div>""", unsafe_allow_html=True)
+            c = "up" if q['change']>0 else "down"
+            st.markdown(f"<div class='card'><h2>{q['name']} {q['price']} <span class='{c}'>{q['change']:+.2f} ({q['pct']:+.2f}%)</span></h2></div>", unsafe_allow_html=True)
             
-            # K線切換
-            kt = st.radio("週期", ["日K", "週K", "月K"], horizontal=True)
-            kp, ki = ("3mo","1d") if kt=="日K" else ("1y","1wk") if kt=="週K" else ("5y","1mo")
-            df = engine.fetch_kline(tk, kp, ki)
-            if not df.empty: st.plotly_chart(plot_kline(df, f"{tk} {kt}"), use_container_width=True)
-            
-            # 基本面
-            prof = engine.fetch_stock_profile(tk)
-            if prof:
-                c1, c2, c3 = st.columns(3)
-                c1.metric("PE", prof['pe']); c2.metric("EPS", prof['eps']); c3.metric("殖利率", f"{prof['yield']:.2f}%")
-            
-            # 外部連結
-            st.link_button("鉅亨網詳情", f"https://stock.cnyes.com/market/TWS:{tk}:STOCK")
-
-        st.divider()
+            tab1, tab2, tab3 = st.tabs(["📈 技術走勢", "📋 基本資料", "🔗 外部連結"])
+            with tab1:
+                k_type = st.radio("週期", ["日K", "週K", "月K"], horizontal=True)
+                kp, ki = ("3mo","1d") if k_type=="日K" else ("1y","1wk") if k_type=="週K" else ("5y","1mo")
+                df_k = engine.fetch_kline(ticker, kp, ki)
+                if not df_k.empty: st.plotly_chart(plot_chart(df_k, f"{q['name']} {k_type}"), use_container_width=True)
+            with tab2:
+                if prof:
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("PE", prof['pe']); c2.metric("EPS", prof['eps']); c3.metric("殖利率", f"{prof['yield']:.2f}%")
+            with tab3:
+                st.link_button("鉅亨網詳情", f"https://stock.cnyes.com/market/TWS:{ticker}:STOCK")
         
-        # 掃描
-        with st.expander("🔥 熱點掃描"):
+        st.divider()
+        # C. 掃描
+        with st.expander("🔥 市場熱點掃描"):
             strat = st.selectbox("策略", ["漲幅排行 (飆股)", "爆量強勢股", "跌深反彈"])
-            if st.button("掃描"):
+            if st.button("開始掃描"):
                 res = engine.scan_market(strat)
                 st.dataframe(res, use_container_width=True)
 
-    with c_side:
-        # 新聞
-        st.subheader("📰 市場快訊")
-        news = engine.get_news()
+    with col_news:
+        # D. 新聞
+        st.subheader("📰 今日頭條")
+        news = engine.get_real_news()
         for n in news:
-            st.markdown(f"<div class='card' style='padding:12px'><a href='{n['link']}' target='_blank' style='text-decoration:none;font-weight:bold'>{n['title']}</a><br><small>{n['time']}</small></div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='news-item'><a class='news-link' href='{n['link']}' target='_blank'>{n['title']}</a><br><small>{n['time']}</small></div>", unsafe_allow_html=True)
         
-        # 小金庫
-        render_treasury()
+        st.divider()
+        # E. 台股小金庫 (含刪除功能)
+        st.subheader("🎒 台股小金庫")
+        if st.session_state.portfolio:
+            p_data = []
+            tp = 0
+            for i in st.session_state.portfolio:
+                pq = engine.fetch_quote(i['code'])
+                curr = pq['price'] if pq else i['cost']
+                prof = (curr - i['cost']) * i['qty']
+                tp += prof
+                p_data.append({"名稱": i['name'], "現價": curr, "損益": prof})
+            st.metric("總損益", f"${tp:,.0f}")
+            st.dataframe(pd.DataFrame(p_data), use_container_width=True)
+        else: st.info("無庫存")
+
+        t1, t2 = st.tabs(["➕ 新增", "🗑️ 刪除"])
+        with t1:
+            c1, c2 = st.columns(2)
+            pc = c1.text_input("代號", key="pc")
+            pn = c2.text_input("名稱", key="pn")
+            pco = c1.number_input("成本", key="pco")
+            pq = c2.number_input("股數", 1000, key="pq")
+            if st.button("加入"):
+                st.session_state.portfolio.append({"code":pc, "name":pn or pc, "cost":pco, "qty":pq})
+                st.rerun()
+        with t2:
+            if st.session_state.portfolio:
+                opts = [f"{x['code']} {x['name']}" for x in st.session_state.portfolio]
+                sels = st.multiselect("刪除", opts)
+                if st.button("確認刪除") and sels:
+                    st.session_state.portfolio = [x for x in st.session_state.portfolio if f"{x['code']} {x['name']}" not in sels]
+                    st.rerun()
 
 # ==========================================
-# 6. 模組 B：當沖網格戰神 (全新替換)
+# 5. 模組二：當沖網格戰神 (全新替換版)
 # ==========================================
-TIER_MAP = {"一般會員": 1, "小資會員": 3, "大佬會員": 5}
-
 def render_grid_bot():
-    # --- 1. 登入檢查 (無登入則顯示登入框) ---
+    TIER_LIMITS = {"一般會員": 1, "小資會員": 3, "大佬會員": 5}
+
+    # 1. 登入畫面 (Gatekeeper)
     if not st.session_state.login_status:
-        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("<div class='nav-bar'><span class='nav-title'>⚡ 網格戰神 (鎖定中)</span></div>", unsafe_allow_html=True)
         c1, c2, c3 = st.columns([1, 2, 1])
         with c2:
             st.markdown("<div class='card'>", unsafe_allow_html=True)
-            st.subheader("⚡ 網格戰神登入")
-            st.info("請輸入模擬帳號密碼")
-            
-            with st.form("login"):
-                bk = st.selectbox("券商", ["元大", "凱基", "富邦"])
-                # 會員分級
+            st.subheader("🔒 模擬登入系統")
+            with st.form("login_form"):
+                bk = st.selectbox("券商", ["元大證券", "凱基證券", "富邦證券"])
+                # 會員分級選擇
                 role = st.selectbox("會員等級", ["一般會員", "小資會員", "大佬會員"])
                 acc = st.text_input("帳號 (任意)")
                 pwd = st.text_input("密碼 (任意)", type="password")
-                
-                if st.form_submit_button("🚀 登入系統", use_container_width=True):
+                if st.form_submit_button("🚀 登入"):
                     if pwd:
                         st.session_state.login_status = True
-                        st.session_state.user_role = role
-                        st.session_state.broker = bk
+                        st.session_state.member_tier = role
                         st.rerun()
                     else: st.error("請輸入密碼")
             st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    # --- 2. 登入後：操盤室 ---
-    limit = TIER_MAP[st.session_state.user_role]
-    used = len(st.session_state.strategies)
+    # 2. 登入後畫面
+    limit = TIER_LIMITS[st.session_state.member_tier]
+    used = len(st.session_state.grid_strategies)
     
     st.markdown(f"""
     <div class='nav-bar'>
-        <span class='nav-title'>⚡ 當沖網格戰神 | {st.session_state.broker}</span>
-        <span class='nav-info'>👤 {st.session_state.user_role} (額度: {used}/{limit})</span>
+        <span class='nav-title'>⚡ 當沖網格戰神</span>
+        <span style='float:right; margin-top:5px; background:rgba(255,255,255,0.2); padding:5px 10px; border-radius:15px;'>
+            👤 {st.session_state.member_tier} (額度: {used}/{limit})
+        </span>
     </div>""", unsafe_allow_html=True)
 
-    # 全域 LINE 設定
-    with st.expander("📢 LINE 通知設定 (全域)", expanded=False):
+    # LINE Token 設定
+    with st.expander("📢 LINE 通知設定", expanded=False):
         c1, c2 = st.columns(2)
         st.session_state.line_token = c1.text_input("Token", st.session_state.line_token, type="password")
         st.session_state.line_uid = c2.text_input("User ID", st.session_state.line_uid)
 
-    # 新增策略區
+    # 新增策略
     if used < limit:
-        with st.expander("➕ 新增網格策略", expanded=True):
-            c1, c2, c3, c4, c5 = st.columns(5)
-            nc = c1.text_input("代號", "0050", key="g_c")
-            nu = c2.number_input("上限", 100.0, key="g_u")
-            nl = c3.number_input("下限", 80.0, key="g_l")
-            ng = c4.number_input("格數", 10, key="g_g")
-            nd = c5.number_input("折數", 0.6, key="g_d")
-            
-            if st.button("💾 儲存監控"):
-                st.session_state.strategies.append({"code": nc, "upper": nu, "lower": nl, "grids": ng, "disc": nd})
-                st.rerun()
+        with st.expander("➕ 新增監控策略", expanded=True):
+            with st.form("add_grid"):
+                c1, c2, c3, c4, c5 = st.columns(5)
+                code = c1.text_input("代號", "00632R")
+                upper = c2.number_input("上限", 100.0)
+                lower = c3.number_input("下限", 80.0)
+                grids = c4.number_input("格數", 10, min_value=2)
+                disc = c5.number_input("手續費折數", 0.6)
+                if st.form_submit_button("💾 加入"):
+                    st.session_state.grid_strategies.append({"code": code, "upper": upper, "lower": lower, "grids": grids, "disc": disc})
+                    st.rerun()
     else:
-        st.warning(f"⚠️ 已達 {st.session_state.user_role} 額度上限 ({limit}筆)，無法新增。")
+        st.warning(f"⚠️ 您的 {st.session_state.member_tier} 額度 ({limit}筆) 已滿。")
 
-    # 顯示策略清單
-    st.markdown("### 📋 監控列表")
-    if not st.session_state.strategies: st.info("尚無策略")
-    
-    for idx, s in enumerate(st.session_state.strategies):
+    # 監控列表
+    st.markdown("### 📋 監控中列表")
+    if not st.session_state.grid_strategies: st.info("目前無監控策略")
+
+    for i, s in enumerate(st.session_state.grid_strategies):
         with st.container():
-            st.markdown(f"<div class='grid-card'>", unsafe_allow_html=True)
+            st.markdown("<div class='bot-card'>", unsafe_allow_html=True)
             c_info, c_act = st.columns([3, 1])
             
-            # 計算邏輯
+            # 計算
             q = engine.fetch_quote(s['code'])
             curr = q['price'] if q else 0
             step = (s['upper'] - s['lower']) / s['grids']
-            levels = [s['lower'] + x*step for x in range(s['grids']+1)]
-            
-            # 判斷買賣點
+            levels = [s['lower'] + x * step for x in range(s['grids'] + 1)]
             near_s = min([p for p in levels if p > curr], default=None)
             near_b = max([p for p in levels if p < curr], default=None)
-            
+
             with c_info:
-                st.markdown(f"**{s['code']} (現價: {curr})**")
-                st.caption(f"區間: {s['lower']} ~ {s['upper']} | 格數: {s['grids']} | 折數: {s['disc']}")
+                st.subheader(f"{s['code']} (現價: {curr})")
+                st.caption(f"區間: {s['lower']}~{s['upper']} | 格數: {s['grids']}")
                 c1, c2 = st.columns(2)
-                if near_s: c1.markdown(f"<span class='tag-sell'>賣壓: {near_s:.2f}</span>", unsafe_allow_html=True)
-                if near_b: c2.markdown(f"<span class='tag-buy'>支撐: {near_b:.2f}</span>", unsafe_allow_html=True)
+                if near_s: c1.error(f"賣壓: {near_s:.2f}")
+                if near_b: c2.success(f"支撐: {near_b:.2f}")
 
             with c_act:
-                # 刪除按鈕
-                if st.button("🗑️ 刪除", key=f"del_{idx}"):
-                    st.session_state.strategies.pop(idx)
+                if st.button("🗑️ 刪除", key=f"del_{i}"):
+                    st.session_state.grid_strategies.pop(i)
                     st.rerun()
                 
-                # LINE 通知按鈕
-                if st.button("📤 Line", key=f"line_{idx}"):
+                # LINE 按鈕
+                if st.button("📤 Line 通知", key=f"ln_{i}"):
                     if st.session_state.line_token:
-                        est_b, _, _ = calc_fee(near_b if near_b else 0, 1, "BUY", s['disc'])
-                        est_s, _, _ = calc_fee(near_s if near_s else 0, 1, "SELL", s['disc'])
-                        msg = f"【網格快報】\n{s['code']} 現價:{curr}\n建議買:{near_b}(約${est_b})\n建議賣:{near_s}(約${est_s})"
-                        if engine.send_line(st.session_state.line_token, st.session_state.line_uid, msg):
-                            st.toast("已發送", icon="✅")
+                        fb, _, _ = calc_fee(near_b or 0, 1, "BUY", s['disc'])
+                        fs, _, _ = calc_fee(near_s or 0, 1, "SELL", s['disc'])
+                        msg = f"【網格快報】\n{s['code']} 現價:{curr}\n買點:{near_b}(含費${fb})\n賣點:{near_s}(含費稅${fs})"
+                        if engine.send_line_push(st.session_state.line_token, st.session_state.line_uid, msg):
+                            st.toast("發送成功", icon="✅")
                         else: st.error("發送失敗")
-                    else: st.error("請設定 Token")
-
+                    else: st.error("請輸入 Token")
             st.markdown("</div>", unsafe_allow_html=True)
 
 # ==========================================
-# 7. 導航與登出
+# 6. 主程式導航
 # ==========================================
 with st.sidebar:
-    st.title("🔥 股市特務 X")
+    st.title("🕵️ 股市特務 X")
     st.markdown("---")
     
-    # 登入狀態顯示
     if st.session_state.login_status:
-        st.success(f"已登入: {st.session_state.user_role}")
-        if st.button("登出"):
+        st.success(f"已登入: {st.session_state.member_tier}")
+        if st.button("登出 (切換帳號)"):
             st.session_state.login_status = False
-            st.session_state.strategies = []
+            st.session_state.grid_strategies = []
             st.rerun()
 
-    page = st.radio("前往", ["📊 股市情報站", "⚡ 網格戰神"])
+    module = st.radio("導航", ["📊 股市情報站", "⚡ 當沖網格戰神"])
     st.markdown("---")
-    if st.button("清除快取"): st.cache_data.clear(); st.rerun()
+    if st.button("清除快取"):
+        st.cache_data.clear()
+        st.rerun()
 
-if page == "📊 股市情報站": render_dashboard()
-elif page == "⚡ 網格戰神": render_grid_bot()
+if module == "📊 股市情報站":
+    render_dashboard()
+elif module == "⚡ 當沖網格戰神":
+    render_grid_bot()
