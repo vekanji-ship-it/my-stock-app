@@ -2,41 +2,50 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import plotly.express as px
-from plotly.subplots import make_subplots
 import yfinance as yf
 from datetime import datetime, time as dt_time
 import pytz
 import time
 import feedparser
+import requests # 用於發送 LINE 通知
 
 # ==========================================
-# 1. 系統初始化 & CSS 風格
+# 1. 系統初始化 & CSS 風格 (特務風格)
 # ==========================================
-st.set_page_config(page_title="ProQuant X 旗艦系統", page_icon="🦅", layout="wide")
+st.set_page_config(page_title="股市特務 X", page_icon="🕵️", layout="wide")
 
 st.markdown("""
     <style>
-    .stApp { background-color: #f4f7f6; font-family: 'Microsoft JhengHei', sans-serif; }
+    /* 全局設定 */
+    .stApp { background-color: #f0f2f6; font-family: 'Microsoft JhengHei', sans-serif; }
     
-    /* 導航條 */
-    .nav-bar { background-color: #fff; padding: 10px; border-bottom: 2px solid #ee3f2d; margin-bottom: 20px; }
-    .nav-title { font-size: 24px; font-weight: bold; color: #333; }
+    /* 頂部導航條 */
+    .nav-bar { 
+        background: linear-gradient(90deg, #1e3c72 0%, #2a5298 100%); 
+        padding: 15px; border-radius: 0 0 10px 10px; margin-bottom: 20px; color: white;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    }
+    .nav-title { font-size: 26px; font-weight: bold; letter-spacing: 1px; }
     
-    /* 卡片與區塊 */
-    .card { background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); text-align: center; }
+    /* 卡片優化 */
+    .card { background: white; padding: 15px; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); text-align: center; }
     .card-title { font-size: 14px; color: #666; }
     .card-val { font-size: 22px; font-weight: bold; }
     
-    /* 顏色 */
-    .up { color: #eb3f38; } .down { color: #2daa59; } .flat { color: #333; }
+    /* 漲跌色 */
+    .up { color: #d32f2f; } .down { color: #2e7d32; } .flat { color: #555; }
     
-    /* 新聞 */
-    .news-item { padding: 10px; border-bottom: 1px solid #eee; background: white; margin-bottom: 5px; border-radius: 5px; }
-    .news-link { text-decoration: none; color: #333; font-weight: bold; font-size: 16px; }
-    .news-link:hover { color: #ee3f2d; }
+    /* 新聞列表 */
+    .news-item { padding: 12px; border-bottom: 1px solid #eee; background: white; margin-bottom: 8px; border-radius: 8px; transition: 0.2s; }
+    .news-item:hover { transform: translateX(5px); border-left: 4px solid #1e3c72; }
+    .news-link { text-decoration: none; color: #333; font-weight: bold; font-size: 16px; display: block; }
+    .news-link:hover { color: #1e3c72; }
     .news-meta { font-size: 12px; color: #888; margin-top: 5px; }
-    
+
+    /* 機器人狀態燈 */
+    .bot-active { border-left: 5px solid #4caf50; background-color: #e8f5e9; padding: 10px; border-radius: 5px; }
+    .bot-inactive { border-left: 5px solid #9e9e9e; background-color: #f5f5f5; padding: 10px; border-radius: 5px; }
+
     /* 隱藏預設元件 */
     #MainMenu {visibility: hidden;} footer {visibility: hidden;}
     </style>
@@ -48,19 +57,8 @@ st.markdown("""
 class DataEngine:
     def __init__(self):
         self.tz = pytz.timezone('Asia/Taipei')
-        # 擴大觀察名單以模擬市場掃描 (涵蓋高價、低價、熱門股)
-        self.watch_list = [
-            "2330", "2317", "2454", "2603", "2609", "2615", "3231", "2382", "2356", "2303", 
-            "2881", "2882", "2891", "2376", "2388", "3037", "3035", "3017", "2368", "3008",
-            "1513", "1519", "1503", "1504", "2515", "2501", "2002", "1605", "2344", "2409",
-            "3481", "6182", "8069", "5483", "6223", "3661", "6531", "3529", "6719", "2327",
-            "2498", "3532", "5347", "3260", "6147", "8046", "3034", "3036", "4968", "2313",
-            "5269", "6278", "6789", "6415", "6669", "5274", "3694", "2486", "6214", "8028",
-            "2618", "2610", "2606", "2605", "1101", "1102", "1216", "1301", "1303", "1326",
-            "1402", "1476", "1560", "1590", "1609", "1702", "1708", "1710", "1717", "1722",
-            "1723", "1736", "1760", "1789", "1795", "1802", "1904", "1907", "1909", "2006",
-            "2014", "2027", "2049", "2059", "2103", "2104", "2105", "2106", "2201", "2204"
-        ]
+        # 內建熱門股清單
+        self.watch_list = ["2330", "2317", "2454", "2603", "2609", "2615", "3231", "2382", "2356", "2303"]
 
     def get_market_status(self):
         now = datetime.now(self.tz)
@@ -109,80 +107,57 @@ class DataEngine:
 
     @st.cache_data(ttl=300)
     def get_real_news(_self):
-        rss_url = "https://news.cnyes.com/rss/cat/twstock"
-        try:
-            feed = feedparser.parse(rss_url)
-            news_items = []
-            for entry in feed.entries[:6]:
-                t = entry.published_parsed
-                time_str = f"{t.tm_hour:02}:{t.tm_min:02}" if t else "最新"
-                news_items.append({"title": entry.title, "link": entry.link, "time": time_str, "source": "鉅亨網"})
-            return news_items
-        except: return [{"title": "新聞載入失敗", "link": "#", "time": "--", "source": "系統"}]
-
-    # 市場掃描邏輯 (加上篩選功能)
-    @st.cache_data(ttl=60)
-    def scan_market(_self, min_price, max_price, strategy):
-        data_list = []
-        tickers_tw = [f"{x}.TW" for x in _self.watch_list]
-        try:
-            df = yf.download(tickers_tw, period="1d", group_by='ticker', threads=True, progress=False)
-            for code in _self.watch_list:
-                try:
-                    t_code = f"{code}.TW"
-                    if t_code not in df.columns.levels[0]: continue
-                    sub = df[t_code]
-                    if sub.empty: continue
-                    
-                    row = sub.iloc[-1]
-                    price = float(row['Close'])
-                    
-                    # 1. 第一層篩選：價格區間
-                    if not (min_price <= price <= max_price): continue
-                    
-                    open_p = float(row['Open'])
-                    change_pct = (price - open_p) / open_p * 100
-                    vol = int(row['Volume'])
-                    
-                    data_list.append({
-                        "代號": code,
-                        "股價": round(price, 2),
-                        "漲跌幅(%)": round(change_pct, 2),
-                        "成交量": vol,
-                        "abs_change": abs(change_pct) # 輔助排序用
-                    })
-                except: continue
-                
-            res_df = pd.DataFrame(data_list)
-            if res_df.empty: return res_df
+        # 增強版新聞抓取，避免空白
+        rss_urls = [
+            "https://news.cnyes.com/rss/cat/twstock", # 鉅亨台股
+            "https://news.cnyes.com/rss/cat/headline" # 鉅亨頭條
+        ]
+        news_items = []
+        for url in rss_urls:
+            try:
+                feed = feedparser.parse(url)
+                if not feed.entries: continue
+                for entry in feed.entries[:5]: # 每個源抓5則
+                    if any(x['link'] == entry.link for x in news_items): continue # 去重
+                    t = entry.published_parsed
+                    time_str = f"{t.tm_hour:02}:{t.tm_min:02}" if t else "最新"
+                    news_items.append({"title": entry.title, "link": entry.link, "time": time_str, "source": "鉅亨網"})
+                if len(news_items) >= 8: break
+            except: pass
             
-            # 2. 第二層篩選：策略排序
-            if strategy == "漲跌停 (±10%)":
-                # 找漲跌幅絕對值最大的
-                return res_df.sort_values(by="abs_change", ascending=False).head(10)
-            elif strategy == "爆量強勢股":
-                # 找成交量最大的
-                return res_df.sort_values(by="成交量", ascending=False).head(10)
-            elif strategy == "飆股 (漲幅排行)":
-                # 只找漲最多的
-                return res_df.sort_values(by="漲跌幅(%)", ascending=False).head(10)
-                
-            return res_df
-        except: return pd.DataFrame()
+        if not news_items:
+            return [{"title": "目前無最新新聞 (連線重試中)", "link": "#", "time": "--", "source": "系統"}]
+        return news_items
+
+    def send_line_notify(self, token, message):
+        """發送 LINE Notify"""
+        url = "https://notify-api.line.me/api/notify"
+        headers = {"Authorization": "Bearer " + token}
+        payload = {'message': message}
+        try:
+            r = requests.post(url, headers=headers, params=payload)
+            return r.status_code == 200
+        except:
+            return False
 
 engine = DataEngine()
 
 # ==========================================
-# 3. Session 狀態管理
+# 3. Session 狀態管理 (含機器人多筆邏輯)
 # ==========================================
 if 'portfolio' not in st.session_state: 
-    st.session_state.portfolio = [
-        {"code": "2330", "name": "台積電", "cost": 980, "qty": 1000},
-        {"code": "0050", "name": "元大台灣50", "cost": 180, "qty": 500}
-    ]
+    st.session_state.portfolio = [{"code": "2330", "name": "台積電", "cost": 980, "qty": 1000}]
 if 'login_status' not in st.session_state: st.session_state.login_status = False
-if 'broker_id' not in st.session_state: st.session_state.broker_id = ""
+if 'member_tier' not in st.session_state: st.session_state.member_tier = "一般會員" # 預設
+if 'line_token' not in st.session_state: st.session_state.line_token = ""
+if 'bot_instances' not in st.session_state:
+    # 初始化 5 個機器人插槽
+    st.session_state.bot_instances = [
+        {"id": i, "active": False, "code": "2330", "price": 1000.0, "qty": 1, "profit": 5.0, "loss": 2.0} 
+        for i in range(5)
+    ]
 
+# Helper: 自動填入名稱
 def auto_fill_name():
     code = st.session_state.p_code_input
     if code:
@@ -190,15 +165,15 @@ def auto_fill_name():
         if info: st.session_state.p_name_input = info['name']
 
 # ==========================================
-# 4. 模組一：資產戰情室
+# 4. 模組一：股市情報站 (原戰情室)
 # ==========================================
 def render_dashboard():
-    st.markdown("<div class='nav-bar'><span class='nav-title'>🌍 ProQuant 資產戰情室</span></div>", unsafe_allow_html=True)
+    st.markdown("<div class='nav-bar'><span class='nav-title'>🕵️ 股市情報站 (Intelligence Station)</span></div>", unsafe_allow_html=True)
     
     col_idx, col_news = st.columns([3, 2])
     
     with col_idx:
-        st.subheader("📊 市場戰情")
+        st.subheader("📊 市場行情")
         indices = engine.fetch_indices()
         c_grid = st.columns(4)
         for i, (name, data) in enumerate(indices.items()):
@@ -214,39 +189,20 @@ def render_dashboard():
                     """, unsafe_allow_html=True)
         
         st.divider()
-        st.subheader("🔥 市場熱點排行 (Market Scanner)")
+        st.subheader("🔎 個股偵查")
+        ticker = st.text_input("輸入代號 (例如 2330)", "2330")
+        df = engine.fetch_kline(ticker)
         
-        # --- 搜尋條件設定區 ---
-        with st.container():
-            st.info("💡 請設定篩選條件以開始搜尋")
-            c_s1, c_s2, c_s3, c_s4 = st.columns([2, 2, 3, 2])
-            
-            # 條件 1: 價格區間
-            min_p = c_s1.number_input("最低價 ($)", value=10, min_value=1)
-            max_p = c_s2.number_input("最高價 ($)", value=1000, min_value=1)
-            
-            # 條件 2: 策略
-            strat = c_s3.selectbox("篩選策略", ["漲跌停 (±10%)", "爆量強勢股", "飆股 (漲幅排行)"])
-            
-            # 按鈕觸發
-            start_scan = c_s4.button("🔍 開始搜尋", use_container_width=True, type="primary")
-        
-        if start_scan:
-            with st.spinner("正在掃描全市場數據..."):
-                scan_res = engine.scan_market(min_p, max_p, strat)
-                
-                if not scan_res.empty:
-                    st.success(f"搜尋完成！符合條件前 10 名：")
-                    st.dataframe(
-                        scan_res.style.format({"股價": "{:.2f}", "漲跌幅(%)": "{:+.2f}%", "成交量": "{:,}"}),
-                        use_container_width=True
-                    )
-                else:
-                    st.warning("⚠️ 查無符合條件的股票，請調整價格區間。")
-
+        if not df.empty:
+            fig = go.Figure(data=[go.Candlestick(x=df['date'], open=df['open'], high=df['high'], low=df['low'], close=df['close'])])
+            fig.update_layout(height=400, xaxis_rangeslider_visible=False, title=f"{ticker} 技術線圖", margin=dict(l=0,r=0,t=30,b=0))
+            st.plotly_chart(fig, use_container_width=True)
+    
     with col_news:
         st.subheader("📰 今日頭條 (Anue)")
-        news_list = engine.get_real_news()
+        with st.spinner("正在解密新聞數據..."):
+            news_list = engine.get_real_news()
+            
         for news in news_list:
             st.markdown(f"""
             <div class='news-item'>
@@ -257,11 +213,11 @@ def render_dashboard():
             
     st.divider()
     
-    st.subheader("🎒 我的投資組合")
+    st.subheader("🎒 我的資產庫存")
     with st.expander("➕ 新增庫存紀錄", expanded=False):
         c1, c2, c3, c4 = st.columns(4)
         new_code = c1.text_input("代號", key="p_code_input", on_change=auto_fill_name)
-        new_name = c2.text_input("名稱", key="p_name_input")
+        new_name = c2.text_input("名稱 (自動帶入)", key="p_name_input")
         new_cost = c3.number_input("平均成本", min_value=0.0)
         new_qty = c4.number_input("股數", min_value=1, step=1000)
         
@@ -288,102 +244,120 @@ def render_dashboard():
                 "成本": item['cost'], "現價": f"{curr:.2f}", "損益": f"{prof:,.0f}", "報酬率": f"{pct:+.2f}%"
             })
         st.dataframe(pd.DataFrame(p_data), use_container_width=True)
-        c_tot1, c_tot2 = st.columns(2)
-        color = "up" if tot_p > 0 else "down"
-        c_tot1.metric("總資產", f"${tot_a:,.0f}")
-        c_tot2.markdown(f"#### 總損益: <span class='{color}'>${tot_p:,.0f}</span>", unsafe_allow_html=True)
 
 # ==========================================
-# 5. 模組二：自動交易機器人 (Auto-Bot)
+# 5. 模組二：股市特務 X (交易機器人)
 # ==========================================
-def render_autobot():
-    st.markdown("<div class='nav-bar'><span class='nav-title'>🤖 ProQuant 自動交易機器人</span></div>", unsafe_allow_html=True)
+def render_bot():
+    st.markdown("<div class='nav-bar'><span class='nav-title'>🕵️ 股市特務 X (Auto-Trading Bot)</span></div>", unsafe_allow_html=True)
     
-    # 檢查是否登入
+    # 登入檢查
     if not st.session_state.login_status:
-        st.warning("🔒 此功能為高階交易功能，請先登入券商憑證")
-        
+        st.warning("🔒 特務功能需驗證身分")
         c1, c2 = st.columns(2)
         with c1:
-            st.subheader("券商憑證登入 (User)")
-            broker = st.selectbox("選擇合作券商", ["元大證券", "凱基證券", "富邦證券", "永豐金"])
-            uid = st.text_input("身分證字號")
-            pwd = st.text_input("交易密碼", type="password")
-            cert = st.file_uploader("上傳憑證 (.pfx)", type=['pfx'])
-            if st.button("🔐 驗證並連線", type="primary"):
+            st.subheader("憑證登入")
+            broker = st.selectbox("券商", ["元大", "凱基", "富邦", "永豐"])
+            if st.button("🔐 模擬登入 (Demo)"):
                 st.session_state.login_status = True
-                st.session_state.broker_id = broker
-                st.success("連線成功！")
-                time.sleep(1)
-                st.rerun()
-                
-        # --- 開發者測試通道 (Developer Backdoor) ---
-        with c2:
-            st.markdown("### 🛠️ 開發人員測試區")
-            st.info("僅供功能測試使用，無需憑證")
-            if st.button("🚀 開發者免登入進入 (Dev Mode)"):
-                st.session_state.login_status = True
-                st.session_state.broker_id = "Dev_Simulator_Mode"
-                st.toast("已切換至開發者模式")
-                time.sleep(0.5)
+                st.success("身分驗證成功")
                 st.rerun()
         return
 
-    st.info(f"✅ 已連線至：{st.session_state.broker_id} (API Mode: Active)")
-    
-    col_chart, col_setting = st.columns([1, 1])
-    
-    with col_setting:
-        st.markdown("### ⚙️ 策略參數設定")
-        target_code = st.text_input("監控代號", "2330", key="bot_code")
-        
-        q = engine.fetch_quote(target_code)
-        if q: st.metric("目前市價", f"{q['price']}", f"{q['change']} ({q['pct']:.2f}%)")
-        
-        st.divider()
-        c_b1, c_b2 = st.columns(2)
-        trigger_price = c_b1.number_input("🎯 觸發買進價", value=q['price'] if q else 1000.0)
-        buy_qty = c_b2.number_input("買進張數", 1, 10, 1)
-        
-        st.markdown("#### 出場條件 (Exit Strategy)")
-        c_s1, c_s2 = st.columns(2)
-        stop_profit = c_s1.number_input("🚀 停利設定 (%)", value=5.0, step=0.5)
-        stop_loss = c_s2.number_input("🛑 停損設定 (%)", value=2.0, step=0.5)
-        
-        est_profit_price = trigger_price * (1 + stop_profit/100)
-        est_loss_price = trigger_price * (1 - stop_loss/100)
-        st.caption(f"預估賣出價位: 停利 @ {est_profit_price:.1f} | 停損 @ {est_loss_price:.1f}")
-        
-        active = st.toggle("🔴 啟動自動監控", value=False)
-        
-        if active:
-            st.success("機器人監控中... (請勿關閉視窗)")
-            st.markdown(f"```text\n[System] Monitor Started: {target_code}\n[Logic] IF Price <= {trigger_price} THEN Buy {buy_qty}\n```")
+    # 會員權限管理
+    st.sidebar.divider()
+    st.sidebar.header("🎫 會員權限設定 (模擬)")
+    # 模擬切換會員等級
+    tier = st.sidebar.selectbox("切換會員等級", ["一般會員 (1筆)", "小資方案 (3筆)", "大佬方案 (5筆)"])
+    if "一般" in tier: limit = 1
+    elif "小資" in tier: limit = 3
+    else: limit = 5
+    st.session_state.member_tier = tier
 
-    with col_chart:
-        st.subheader("📈 監控標的走勢")
-        if q:
-            df = engine.fetch_kline(target_code)
-            if not df.empty:
-                fig = go.Figure(data=[go.Candlestick(x=df['date'], open=df['open'], high=df['high'], low=df['low'], close=df['close'])])
-                fig.add_hline(y=trigger_price, line_dash="dash", line_color="red", annotation_text="買進觸發價")
-                fig.update_layout(height=500, xaxis_rangeslider_visible=False, title=f"{target_code} 即時監控")
-                st.plotly_chart(fig, use_container_width=True)
+    # LINE Token 設定
+    st.sidebar.divider()
+    st.sidebar.header("🔔 LINE 通知設定")
+    line_t = st.sidebar.text_input("輸入 LINE Notify Token", value=st.session_state.line_token, type="password")
+    st.session_state.line_token = line_t
+    if st.sidebar.button("測試 LINE 通知"):
+        if engine.send_line_notify(line_t, "\n【股市特務X】系統連線測試成功！"):
+            st.sidebar.success("發送成功！")
+        else:
+            st.sidebar.error("發送失敗，請檢查 Token")
+
+    # 主畫面
+    st.info(f"👋 歡迎回來，特務。目前權限：**{tier}** (可執行 {limit} 筆任務)")
+
+    # 迴圈渲染機器人插槽
+    for i in range(limit):
+        bot = st.session_state.bot_instances[i]
+        
+        # 樣式容器
+        status_color = "🟢 監控中" if bot['active'] else "⚪ 待命"
+        container_css = "bot-active" if bot['active'] else "bot-inactive"
+        
+        with st.expander(f"🤖 特務機器人 #{i+1} - [{status_color}] {bot['code']}", expanded=True):
+            
+            c_set, c_act = st.columns([3, 1])
+            
+            with c_set:
+                # 參數設定區 (如果是啟動狀態，則鎖定輸入框)
+                disabled = bot['active']
+                c1, c2, c3 = st.columns(3)
+                new_code = c1.text_input(f"監控代號 #{i+1}", bot['code'], key=f"b_code_{i}", disabled=disabled)
+                new_price = c2.number_input(f"觸發價 #{i+1}", value=bot['price'], key=f"b_price_{i}", disabled=disabled)
+                new_qty = c3.number_input(f"張數 #{i+1}", value=bot['qty'], key=f"b_qty_{i}", disabled=disabled)
+                
+                c4, c5 = st.columns(2)
+                new_profit = c4.number_input(f"停利 % #{i+1}", value=bot['profit'], key=f"b_prof_{i}", disabled=disabled)
+                new_loss = c5.number_input(f"停損 % #{i+1}", value=bot['loss'], key=f"b_loss_{i}", disabled=disabled)
+                
+                # 更新 state (未啟動時)
+                if not disabled:
+                    st.session_state.bot_instances[i]['code'] = new_code
+                    st.session_state.bot_instances[i]['price'] = new_price
+                    st.session_state.bot_instances[i]['qty'] = new_qty
+                    st.session_state.bot_instances[i]['profit'] = new_profit
+                    st.session_state.bot_instances[i]['loss'] = new_loss
+
+            with c_act:
+                st.write("#### 任務控制")
+                if not bot['active']:
+                    if st.button(f"🟢 開始執行 #{i+1}", key=f"start_{i}", use_container_width=True):
+                        st.session_state.bot_instances[i]['active'] = True
+                        msg = f"\n【任務啟動】\n代號: {new_code}\n觸發價: {new_price}\n數量: {new_qty}張"
+                        if st.session_state.line_token:
+                            engine.send_line_notify(st.session_state.line_token, msg)
+                        st.rerun()
+                else:
+                    st.markdown(f"""
+                    <div class='{container_css}'>
+                    監控中...<br>
+                    目標: {bot['code']}<br>
+                    條件: < {bot['price']}
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    if st.button(f"🔴 停止任務 #{i+1}", key=f"stop_{i}", use_container_width=True):
+                        st.session_state.bot_instances[i]['active'] = False
+                        msg = f"\n【任務結束】\n代號: {bot['code']}\n已手動停止監控。"
+                        if st.session_state.line_token:
+                            engine.send_line_notify(st.session_state.line_token, msg)
+                        st.rerun()
 
 # ==========================================
 # 6. 主程式進入點
 # ==========================================
 with st.sidebar:
-    st.title("🦅 ProQuant X")
+    st.title("🕵️ 股市特務 X")
     st.markdown("---")
-    module = st.radio("選擇系統模組", ["📊 資產戰情室", "🤖 自動交易機器人"])
+    module = st.radio("特務功能導航", ["📊 股市情報站", "🤖 股市特務 X"])
     st.markdown("---")
-    st.caption("系統狀態: Online")
-    if st.button("清除快取 (重整)"):
+    if st.button("清除快取"):
         st.cache_data.clear()
         st.rerun()
 
-if module == "📊 資產戰情室":
+if module == "📊 股市情報站":
     render_dashboard()
-elif module == "🤖 自動交易機器人":
-    render_autobot()
+elif module == "🤖 股市特務 X":
+    render_bot()
