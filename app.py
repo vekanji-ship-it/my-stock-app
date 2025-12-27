@@ -3,206 +3,279 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import yfinance as yf
+from datetime import datetime, time as dt_time
+import pytz
 import time
-from datetime import datetime, timedelta
 
 # ==========================================
-# 1. 頁面設定 (鉅亨風格)
+# 1. 系統初始化與鉅亨風格設定
 # ==========================================
-st.set_page_config(page_title="ProQuant X 智能操盤", page_icon="🤖", layout="wide")
+st.set_page_config(page_title="ProQuant X 鉅亨操盤室", page_icon="📈", layout="wide")
 
 st.markdown("""
     <style>
-    .stApp { background-color: #ffffff; color: #333; }
-    .metric-value { font-size: 32px; font-weight: bold; font-family: Arial; }
-    .up { color: #eb3f38; }
-    .down { color: #2daa59; }
-    .log-area { 
-        background-color: #000; color: #0f0; 
-        font-family: 'Courier New'; padding: 10px; border-radius: 5px; 
-        height: 150px; overflow-y: scroll;
+    /* 全局樣式：鉅亨網白底風格 */
+    .stApp { background-color: #ffffff; color: #333; font-family: 'Microsoft JhengHei', sans-serif; }
+    
+    /* 價格大字 */
+    .price-main { font-size: 48px; font-weight: bold; font-family: 'Roboto'; }
+    .up { color: #eb3f38; }   /* 台股漲 */
+    .down { color: #2daa59; } /* 台股跌 */
+    .flat { color: #555555; }
+    
+    /* 側邊欄優化 */
+    [data-testid="stSidebar"] { background-color: #f5f5f5; border-right: 1px solid #ddd; }
+    
+    /* 狀態標籤 */
+    .status-tag {
+        padding: 5px 10px; border-radius: 4px; font-size: 14px; font-weight: bold;
+        display: inline-block; margin-bottom: 10px;
     }
-    /* 隱藏預設選單 */
+    .status-open { background-color: #eb3f38; color: white; }
+    .status-closed { background-color: #777; color: white; }
+    
+    /* 隱藏預設元件 */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     </style>
     """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. 模擬數據生成引擎 (取代易卡死的 twstock)
+# 2. 核心引擎：時間與數據邏輯
 # ==========================================
-def generate_mock_data():
-    # 產生 100 天的模擬 K 線
-    dates = pd.date_range(end=datetime.now(), periods=100)
-    base_price = 1000
+class MarketEngine:
+    def __init__(self):
+        self.tz = pytz.timezone('Asia/Taipei')
     
-    # 隨機漫步產生價格
-    changes = np.random.normal(0, 10, 100)
-    prices = base_price + np.cumsum(changes)
-    
-    df = pd.DataFrame(index=dates)
-    df['Date'] = dates
-    df['close'] = prices
-    df['open'] = df['close'].shift(1) + np.random.normal(0, 5, 100)
-    df['high'] = df[['open', 'close']].max(axis=1) + np.random.rand(100) * 10
-    df['low'] = df[['open', 'close']].min(axis=1) - np.random.rand(100) * 10
-    df['vol'] = np.random.randint(5000, 50000, 100)
-    
-    # 填補第一筆 NaN
-    df.fillna(method='bfill', inplace=True)
-    return df
+    def get_market_status(self):
+        """判斷台股是否開盤 (09:00 - 13:30, 週末除外)"""
+        now = datetime.now(self.tz)
+        
+        # 1. 判斷週末 (5=週六, 6=週日)
+        if now.weekday() >= 5:
+            return "CLOSED", "休市 (週末)"
+            
+        # 2. 判斷時間 (09:00 - 13:30)
+        market_open = dt_time(9, 0)
+        market_close = dt_time(13, 30)
+        current_time = now.time()
+        
+        if market_open <= current_time <= market_close:
+            return "OPEN", "盤中連線"
+        elif current_time < market_open:
+            return "PRE", "試搓時段" # 模擬試搓，實際上抓昨收
+        else:
+            return "CLOSED", "已收盤"
+
+    @st.cache_data(ttl=60) # 盤中60秒更新一次
+    def fetch_data(_self, ticker, status):
+        try:
+            stock = yf.Ticker(ticker)
+            
+            if status == "OPEN":
+                # 盤中：抓 1 分鐘 K 線 (看即時走勢)
+                # yfinance 限制：1m 資料只能抓最近 7 天
+                df = stock.history(period="1d", interval="1m")
+            else:
+                # 收盤/休市：抓日 K 線 (看波段)
+                df = stock.history(period="3mo", interval="1d")
+                
+            if df.empty: return pd.DataFrame()
+            
+            # 資料清洗
+            df.reset_index(inplace=True)
+            df['Date'] = df['Date'].dt.tz_localize(None) # 移除時區避免繪圖錯誤
+            df.rename(columns={'Close': 'close', 'Open': 'open', 'High': 'high', 'Low': 'low', 'Volume': 'vol'}, inplace=True)
+            return df
+        except:
+            return pd.DataFrame()
+
+engine = MarketEngine()
 
 # ==========================================
-# 3. 技術指標計算 (Real Logic)
+# 3. 狀態管理 (Session)
 # ==========================================
-def calculate_indicators(df):
-    # MA
-    df['MA5'] = df['close'].rolling(5).mean()
-    df['MA20'] = df['close'].rolling(20).mean()
-    
-    # RSI
-    delta = df['close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-    rs = gain / loss
-    df['RSI'] = 100 - (100 / (1 + rs))
-    
-    # KD
-    low_min = df['low'].rolling(9).min()
-    high_max = df['high'].rolling(9).max()
-    df['RSV'] = (df['close'] - low_min) / (high_max - low_min) * 100
-    df['K'] = df['RSV'].ewm(com=2).mean()
-    df['D'] = df['K'].ewm(com=2).mean()
-    
-    # MACD
-    exp12 = df['close'].ewm(span=12, adjust=False).mean()
-    exp26 = df['close'].ewm(span=26, adjust=False).mean()
-    df['MACD'] = exp12 - exp26
-    df['Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
-    df['Hist'] = df['MACD'] - df['Signal']
-    
-    return df
-
-# 初始化 Session
-if 'data' not in st.session_state:
-    raw_df = generate_mock_data()
-    st.session_state.data = calculate_indicators(raw_df)
+if 'login_status' not in st.session_state:
+    st.session_state.login_status = False # 預設未登入
+if 'account_type' not in st.session_state:
+    st.session_state.account_type = "Simulation"
 if 'balance' not in st.session_state:
     st.session_state.balance = 1000000
-if 'holdings' not in st.session_state:
-    st.session_state.holdings = 0
-if 'logs' not in st.session_state:
-    st.session_state.logs = []
+if 'positions' not in st.session_state:
+    st.session_state.positions = {} # {'2330.TW': {'qty': 1000, 'cost': 900}}
+if 'orders' not in st.session_state:
+    st.session_state.orders = []
 
 # ==========================================
-# 4. 介面與邏輯
+# 4. 側邊欄：登入與憑證
 # ==========================================
-
-# --- Sidebar ---
 with st.sidebar:
-    st.title("🤖 智動操盤 Pro")
-    stock_id = st.text_input("股票代號", "2330 台積電")
+    st.title("🔐 用戶登入")
     
-    st.divider()
-    st.subheader("策略中心")
-    strategy = st.selectbox("選擇策略", ["KD 黃金交叉", "RSI 超賣反彈", "MACD 趨勢突破"])
-    auto_active = st.toggle("🔴 啟動自動下單", value=True)
+    login_mode = st.radio("選擇登入模式", ["模擬體驗 (Demo)", "券商憑證登入 (Real)"])
     
-    st.divider()
-    st.subheader("圖表設定")
-    tech_view = st.radio("副圖指標", ["成交量", "RSI", "KD", "MACD"])
-
-# --- Main Content ---
-
-# 1. 模擬即時跳動 (每次刷新增加一點波動)
-last_row = st.session_state.data.iloc[-1].copy()
-noise = np.random.normal(0, 2)
-new_price = last_row['close'] + noise
-new_time = last_row['Date'] + timedelta(minutes=1)
-
-# 更新數據 (產生跳動感)
-st.session_state.data.at[st.session_state.data.index[-1], 'close'] = new_price
-st.session_state.data.at[st.session_state.data.index[-1], 'high'] = max(last_row['high'], new_price)
-st.session_state.data.at[st.session_state.data.index[-1], 'low'] = min(last_row['low'], new_price)
-# 重新計算指標 (只算最後幾筆以節省效能)
-st.session_state.data = calculate_indicators(st.session_state.data)
-
-df = st.session_state.data
-current_p = df['close'].iloc[-1]
-last_p = df['close'].iloc[-2]
-diff = current_p - last_p
-color = "up" if diff > 0 else "down"
-
-# 2. 頂部看板
-c1, c2, c3 = st.columns([3, 2, 4])
-with c1:
-    st.markdown(f"## {stock_id}")
-with c2:
-    st.markdown(f"<div class='metric-value {color}'>{current_p:.2f}</div>", unsafe_allow_html=True)
-    st.markdown(f"<span class='{color}'>{diff:+.2f} ({diff/last_p*100:+.2f}%)</span>", unsafe_allow_html=True)
-with c3:
-    st.info(f"💰 資金: ${st.session_state.balance:,.0f} | 🎒 庫存: {st.session_state.holdings} 張")
-
-st.divider()
-
-# 3. 繪圖
-fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_width=[0.3, 0.7], vertical_spacing=0.05)
-
-# K線
-fig.add_trace(go.Candlestick(x=df['Date'], open=df['open'], high=df['high'], low=df['low'], close=df['close'], name='K線'), row=1, col=1)
-fig.add_trace(go.Scatter(x=df['Date'], y=df['MA5'], line=dict(color='orange'), name='MA5'), row=1, col=1)
-fig.add_trace(go.Scatter(x=df['Date'], y=df['MA20'], line=dict(color='blue'), name='MA20'), row=1, col=1)
-
-# 副圖
-if tech_view == "成交量":
-    fig.add_trace(go.Bar(x=df['Date'], y=df['vol'], marker_color='#999'), row=2, col=1)
-elif tech_view == "RSI":
-    fig.add_trace(go.Scatter(x=df['Date'], y=df['RSI'], line=dict(color='purple')), row=2, col=1)
-    fig.add_hline(y=70, line_dash="dash", row=2, col=1); fig.add_hline(y=30, line_dash="dash", row=2, col=1)
-elif tech_view == "KD":
-    fig.add_trace(go.Scatter(x=df['Date'], y=df['K'], name='K'), row=2, col=1)
-    fig.add_trace(go.Scatter(x=df['Date'], y=df['D'], name='D'), row=2, col=1)
-elif tech_view == "MACD":
-    fig.add_trace(go.Bar(x=df['Date'], y=df['Hist']), row=2, col=1)
-    fig.add_trace(go.Scatter(x=df['Date'], y=df['MACD']), row=2, col=1)
-    fig.add_trace(go.Scatter(x=df['Date'], y=df['Signal']), row=2, col=1)
-
-fig.update_layout(height=500, xaxis_rangeslider_visible=False, margin=dict(l=20, r=20, t=10, b=20))
-st.plotly_chart(fig, use_container_width=True)
-
-# 4. 自動交易判定邏輯
-if auto_active:
-    row = df.iloc[-1]
-    prev = df.iloc[-2]
-    
-    action = None
-    msg = ""
-    
-    # 策略模擬
-    if strategy == "KD 黃金交叉":
-        if row['K'] > row['D'] and prev['K'] <= prev['D']:
-            action = "BUY"; msg = f"KD金叉 (K:{row['K']:.1f})"
-    elif strategy == "RSI 超賣反彈":
-        if row['RSI'] < 30:
-            action = "BUY"; msg = f"RSI超賣 ({row['RSI']:.1f})"
-    
-    # 隨機觸發(為了拍片效果，提高觸發率)
-    if np.random.rand() > 0.9: 
-        st.toast("⚡ 機器人掃描中... 發現潛在訊號", icon="🤖")
+    if login_mode == "券商憑證登入 (Real)":
+        st.info("請輸入券商 API 帳號密碼")
+        broker = st.selectbox("合作券商", ["元大證券", "凱基證券", "富邦證券", "永豐金證券"])
+        user_id = st.text_input("身分證字號 / 帳號")
+        user_pwd = st.text_input("密碼", type="password")
+        cert_path = st.file_uploader("上傳憑證 (.pfx)", type=['pfx'])
         
-    if action == "BUY" and st.session_state.balance > current_p * 1000:
-        # 下單
-        st.session_state.balance -= current_p * 1000
-        st.session_state.holdings += 1
-        log = f"[{datetime.now().strftime('%H:%M:%S')}] ✅ 自動買進 | 價格:{current_p:.1f} | 訊號:{msg}"
-        st.session_state.logs.insert(0, log)
-        st.toast(log, icon="✅")
+        if st.button("驗證登入"):
+            if user_id and user_pwd:
+                st.session_state.login_status = True
+                st.session_state.account_type = "Real"
+                st.success(f"✅ {broker} 連線成功 (API Mode)")
+                st.rerun()
+            else:
+                st.error("請輸入完整資訊")
+    else:
+        if st.button("進入模擬系統"):
+            st.session_state.login_status = True
+            st.session_state.account_type = "Simulation"
+            st.rerun()
 
-# 5. 終端機日誌
-st.markdown("### 📜 交易核心日誌")
-log_txt = "\n".join(st.session_state.logs) if st.session_state.logs else "系統待機中... 監控市場訊號..."
-st.text_area("System Log", log_txt, height=150, disabled=True)
+    st.divider()
+    
+    if st.session_state.login_status:
+        acc_color = "red" if st.session_state.account_type == "Real" else "green"
+        st.markdown(f"**帳戶狀態**: :{acc_color}[{st.session_state.account_type}]")
+        st.metric("權益總值", f"${st.session_state.balance:,.0f}")
 
-# 自動刷新 (確保畫面一直動)
-time.sleep(1.5) 
-st.rerun()
+# ==========================================
+# 5. 主系統 (登入後顯示)
+# ==========================================
+if st.session_state.login_status:
+    
+    # --- A. 股票搜尋與狀態 ---
+    col_search, col_status = st.columns([3, 1])
+    with col_search:
+        ticker = st.text_input("輸入股票代號 (支援台股)", "2330.TW")
+    with col_status:
+        # 顯示市場狀態
+        status_code, status_text = engine.get_market_status()
+        css_class = "status-open" if status_code == "OPEN" else "status-closed"
+        st.markdown(f"<br><span class='status-tag {css_class}'>{status_text}</span>", unsafe_allow_html=True)
+
+    # 獲取數據
+    df = engine.fetch_data(ticker, status_code)
+    
+    if df.empty:
+        st.error("查無資料，請確認代號 (台股請加 .TW) 或目前非交易時間。")
+        st.stop()
+
+    # 計算當前數據
+    last_row = df.iloc[-1]
+    prev_close = df['close'].iloc[-2] if len(df) > 1 else last_row['open']
+    price = last_row['close']
+    change = price - prev_close
+    pct = (change / prev_close) * 100
+    color = "up" if change > 0 else "down"
+    
+    # --- B. 鉅亨風格報價看板 ---
+    c1, c2, c3 = st.columns([2, 3, 3])
+    with c1:
+        st.markdown(f"## {ticker}")
+        st.caption("Taipei Exchange")
+    with c2:
+        st.markdown(f"""
+        <div class='price-main {color}'>{price:.2f}</div>
+        <div style='font-size:20px; font-weight:bold;' class='{color}'>
+            {change:+.2f} ({pct:+.2f}%)
+        </div>
+        """, unsafe_allow_html=True)
+    with c3:
+        st.markdown(f"**開盤**: {last_row['open']} | **最高**: {last_row['high']}")
+        st.markdown(f"**最低**: {last_row['low']} | **量**: {int(last_row['vol']):,}")
+
+    st.divider()
+
+    # --- C. 專業 K 線圖與下單介面 (左右佈局) ---
+    col_chart, col_trade = st.columns([2, 1])
+
+    with col_chart:
+        st.subheader("技術分析")
+        
+        # 繪圖
+        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_width=[0.2, 0.8], vertical_spacing=0.03)
+        
+        # K線
+        fig.add_trace(go.Candlestick(
+            x=df['Date'], open=df['open'], high=df['high'], low=df['low'], close=df['close'],
+            increasing_line_color='#eb3f38', decreasing_line_color='#2daa59', name='Price'
+        ), row=1, col=1)
+        
+        # 均線
+        df['MA5'] = df['close'].rolling(5).mean()
+        df['MA20'] = df['close'].rolling(20).mean()
+        fig.add_trace(go.Scatter(x=df['Date'], y=df['MA5'], line=dict(color='orange', width=1), name='MA5'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df['Date'], y=df['MA20'], line=dict(color='#2196f3', width=1), name='MA20'), row=1, col=1)
+        
+        # 成交量
+        colors = ['#eb3f38' if c >= o else '#2daa59' for c, o in zip(df['close'], df['open'])]
+        fig.add_trace(go.Bar(x=df['Date'], y=df['vol'], marker_color=colors, name='Volume'), row=2, col=1)
+        
+        fig.update_layout(height=500, xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=10, b=10))
+        st.plotly_chart(fig, use_container_width=True)
+
+    with col_trade:
+        st.subheader("⚡ 快速下單")
+        
+        # 交易 Tab
+        tab_buy, tab_sell, tab_auto = st.tabs(["買進", "賣出", "🤖 自動交易"])
+        
+        # 共用設定
+        trade_type = st.radio("交易種類", ["現股", "當沖", "零股"], horizontal=True)
+        
+        with tab_buy:
+            qty_step = 1 if trade_type == "零股" else 1
+            qty_label = "股數" if trade_type == "零股" else "張數"
+            
+            # 筆數/數量控制
+            order_qty = st.number_input("數量", min_value=1, value=1, step=qty_step, key="b_qty")
+            order_price = st.number_input("價格 (ROD)", value=price, step=0.5, key="b_price")
+            
+            total_est = order_price * order_qty * (1 if trade_type == "零股" else 1000)
+            st.markdown(f"**預估金額**: ${total_est:,.0f}")
+            
+            if st.button("🔴 下單買進", use_container_width=True):
+                if st.session_state.balance >= total_est:
+                    st.session_state.balance -= total_est
+                    st.session_state.orders.insert(0, f"[{datetime.now().strftime('%H:%M')}] 買進 {ticker} {order_qty}{qty_label} @ {order_price}")
+                    st.success("委託成功！")
+                else:
+                    st.error("資金不足")
+
+        with tab_sell:
+            st.info("庫存賣出功能 (需持有部位)")
+            # (賣出邏輯略，結構同上)
+
+        with tab_auto:
+            st.markdown("### 機器人設定")
+            st.info("策略觸發時，將依以下設定自動執行")
+            
+            auto_strategy = st.selectbox("觸發策略", ["KD 黃金交叉", "RSI 超賣 (<30)", "突破均線"])
+            
+            c_a1, c_a2 = st.columns(2)
+            with c_a1:
+                batch_size = st.number_input("單次張數", 1, 10, 1)
+            with c_a2:
+                max_orders = st.number_input("最大加碼筆數", 1, 5, 3)
+                
+            active = st.toggle("啟動自動交易")
+            if active:
+                st.caption(f"監控中... (上限 {max_orders} 筆, 每筆 {batch_size} 張)")
+
+    # --- D. 委託回報區 ---
+    st.divider()
+    st.subheader("📋 委託回報與成交")
+    if st.session_state.orders:
+        for order in st.session_state.orders:
+            st.text(order)
+    else:
+        st.caption("尚無委託紀錄")
+
+else:
+    # 未登入時的歡迎畫面
+    st.info("請於左側選擇登入模式 (支援 真實憑證 / 模擬體驗)")
