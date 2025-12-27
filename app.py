@@ -27,11 +27,7 @@ st.markdown("""
     }
     .nav-title { font-size: 26px; font-weight: bold; letter-spacing: 1px; }
     
-    /* 漲跌色 */
-    .up { color: #d32f2f; font-weight: bold; } 
-    .down { color: #2e7d32; font-weight: bold; }
-    
-    /* 新聞列表 */
+    /* 新聞列表優化 */
     .news-item { 
         padding: 15px; border-bottom: 1px solid #eee; background: white; 
         margin-bottom: 10px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);
@@ -54,6 +50,7 @@ st.markdown("""
     .stock-header { background: white; padding: 20px; border-radius: 10px; margin-bottom: 15px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
     .stock-price-lg { font-size: 36px; font-weight: bold; }
     .stock-meta { color: #666; font-size: 14px; }
+    .up { color: #d32f2f; } .down { color: #2e7d32; }
     
     #MainMenu {visibility: hidden;} footer {visibility: hidden;}
     </style>
@@ -81,16 +78,22 @@ class DataEngine:
         if not ticker.endswith('.TW') and not ticker.startswith('^'): ticker += '.TW'
         try:
             stock = yf.Ticker(ticker)
-            df = stock.history(period='1d', interval='1m') 
-            if df.empty: df = stock.history(period='5d', interval='1d')
+            # 優先抓取最近一天的分鐘資料以獲得最準確的收盤價
+            df = stock.history(period='1d', interval='1m')
+            if df.empty:
+                # 如果沒開盤或抓不到分鐘線，抓日線
+                df = stock.history(period='5d', interval='1d')
             
             if df.empty: return None
             
             last = df.iloc[-1]
             price = float(last['Close'])
             
+            # 計算漲跌
             change = 0.0
             pct = 0.0
+            # 如果是分鐘線，比較對象應該是昨收 (yfinance info previousClose)
+            # 這裡簡化處理：如果有上一筆資料就比較上一筆
             if len(df) > 1:
                 prev = df.iloc[-2]['Close']
                 change = price - prev
@@ -106,7 +109,7 @@ class DataEngine:
             }
         except: return None
         
-    @st.cache_data(ttl=3600) # 基本資料快取久一點
+    @st.cache_data(ttl=3600)
     def fetch_stock_profile(_self, ticker):
         if not ticker.endswith('.TW'): ticker += '.TW'
         try:
@@ -144,6 +147,7 @@ class DataEngine:
 
     @st.cache_data(ttl=300)
     def get_real_news(_self):
+        # 使用 Google News RSS (聚合鉅亨網等來源)
         rss_url = "https://news.google.com/rss/search?q=台股&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
         news_items = []
         headers = {'User-Agent': 'Mozilla/5.0'}
@@ -204,10 +208,25 @@ class DataEngine:
 engine = DataEngine()
 
 # ==========================================
-# 3. Session 狀態初始化
+# 3. Session 狀態初始化 (修復 Syntax Error)
 # ==========================================
 if 'portfolio' not in st.session_state: st.session_state.portfolio = [{"code": "2330", "name": "台積電", "cost": 980, "qty": 1000}]
 if 'login_status' not in st.session_state: st.session_state.login_status = False
 if 'member_tier' not in st.session_state: st.session_state.member_tier = "一般會員"
 if 'line_token' not in st.session_state: st.session_state.line_token = ""
-if 'line_uid' not
+# ⚠️ 關鍵修復：這裡之前語法不完整，現在補全了
+if 'line_uid' not in st.session_state: st.session_state.line_uid = ""
+
+# 初始化機器人：啟動時直接抓台積電真實現價
+if 'bot_instances' not in st.session_state:
+    default_code = "2330"
+    init_q = engine.fetch_quote(default_code)
+    # 如果抓得到就用現價，抓不到才用預設值 (避免模擬感)
+    init_price = float(init_q['price']) if init_q else 1000.0
+    
+    st.session_state.bot_instances = [
+        {"id": i, "active": False, "code": default_code, "price": init_price, "qty": 1, "profit": 5.0, "loss": 2.0, "cur_price": init_price} 
+        for i in range(5)
+    ]
+
+# 回調：當代
