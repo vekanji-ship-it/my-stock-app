@@ -10,275 +10,315 @@ import pytz
 import time
 
 # ==========================================
-# 1. 系統初始化
+# 1. 系統初始化 & CSS 風格 (鉅亨網配色)
 # ==========================================
-st.set_page_config(page_title="ProQuant X 旗艦系統", page_icon="🦅", layout="wide")
+st.set_page_config(page_title="ProQuant X 雙模組旗艦", page_icon="🦅", layout="wide")
 
 st.markdown("""
     <style>
-    .stApp { background-color: #ffffff; color: #333; font-family: 'Microsoft JhengHei', sans-serif; }
+    /* 全局設定 */
+    .stApp { background-color: #f4f7f6; font-family: 'Microsoft JhengHei', sans-serif; }
     
-    /* 登入狀態標籤 */
-    .account-tag-real { background-color: #d32f2f; color: white; padding: 2px 8px; border-radius: 4px; font-size: 12px; }
-    .account-tag-sim { background-color: #2e7d32; color: white; padding: 2px 8px; border-radius: 4px; font-size: 12px; }
+    /* 頂部導航條模擬 */
+    .nav-bar { background-color: #fff; padding: 10px; border-bottom: 2px solid #ee3f2d; margin-bottom: 20px; }
+    .nav-title { font-size: 24px; font-weight: bold; color: #333; }
     
     /* 戰情室卡片 */
-    .war-room-card {
-        border: 1px solid #eee; padding: 15px; border-radius: 8px;
-        background: #fdfdfd; text-align: center; box-shadow: 0 2px 5px rgba(0,0,0,0.05);
-    }
-    .index-val { font-size: 24px; font-weight: bold; font-family: 'Roboto'; }
-    .index-name { font-size: 14px; color: #666; margin-bottom: 5px; }
+    .card { background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); text-align: center; }
+    .card-title { font-size: 14px; color: #666; }
+    .card-val { font-size: 22px; font-weight: bold; }
     
-    .up { color: #eb3f38; } .down { color: #2daa59; } .flat { color: #555555; }
+    /* 漲跌色 */
+    .up { color: #eb3f38; } .down { color: #2daa59; } .flat { color: #333; }
     
-    [data-testid="stSidebar"] { background-color: #f8f9fa; border-right: 1px solid #eee; }
+    /* 新聞區塊 */
+    .news-item { padding: 10px; border-bottom: 1px solid #eee; background: white; margin-bottom: 5px; border-radius: 5px; }
+    .news-title { font-weight: bold; font-size: 16px; color: #333; }
+    .news-meta { font-size: 12px; color: #888; margin-top: 5px; }
     
+    /* 資產表格 */
+    .portfolio-header { background-color: #333; color: white; padding: 10px; border-radius: 5px 5px 0 0; }
+    
+    /* 隱藏預設元件 */
     #MainMenu {visibility: hidden;} footer {visibility: hidden;}
     </style>
     """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. 核心引擎
+# 2. 核心數據引擎
 # ==========================================
-class MarketEngine:
+class DataEngine:
     def __init__(self):
         self.tz = pytz.timezone('Asia/Taipei')
-    
+
     def get_market_status(self):
         now = datetime.now(self.tz)
-        if now.weekday() >= 5: return "CLOSED", "休市 (週末)"
-        # 簡單判定盤中
-        current_time = now.time()
-        if dt_time(9, 0) <= current_time <= dt_time(13, 30):
-            return "OPEN", "盤中連線"
-        else:
-            return "CLOSED", "已收盤"
+        if now.weekday() >= 5: return "CLOSED"
+        if dt_time(9, 0) <= now.time() <= dt_time(13, 30): return "OPEN"
+        return "CLOSED"
 
     @st.cache_data(ttl=60)
-    def fetch_data(_self, ticker, period="1d", interval="1m"):
+    def fetch_quote(self, ticker):
+        if not ticker.endswith('.TW') and not ticker.startswith('^'): ticker += '.TW'
         try:
-            if not ticker.endswith('.TW') and not ticker.startswith('^'): ticker = f"{ticker}.TW"
             stock = yf.Ticker(ticker)
-            df = stock.history(period=period, interval=interval)
-            if df.empty: return pd.DataFrame()
+            df = stock.history(period='5d', interval='1d')
+            if df.empty: return None
+            last = df.iloc[-1]
+            prev = df.iloc[-2]
+            return {
+                "price": last['Close'], "change": last['Close'] - prev['Close'],
+                "pct": (last['Close'] - prev['Close']) / prev['Close'] * 100,
+                "vol": last['Volume'], "open": last['Open'], "high": last['High'], "low": last['Low']
+            }
+        except: return None
+
+    @st.cache_data(ttl=300)
+    def fetch_indices(self):
+        targets = {"加權指數": "^TWII", "櫃買指數": "^TWOII", "道瓊": "^DJI", "那斯達克": "^IXIC", "費半": "^SOX"}
+        res = {}
+        for name, sym in targets.items():
+            q = self.fetch_quote(sym)
+            if q: res[name] = q
+        return res
+
+    @st.cache_data(ttl=60)
+    def fetch_kline(self, ticker):
+        if not ticker.endswith('.TW'): ticker += '.TW'
+        try:
+            stock = yf.Ticker(ticker)
+            df = stock.history(period="3mo", interval="1d")
             df.reset_index(inplace=True)
             df['Date'] = df['Date'].dt.tz_localize(None)
-            df.rename(columns={'Close': 'close', 'Open': 'open', 'High': 'high', 'Low': 'low', 'Volume': 'vol'}, inplace=True)
+            df.columns = [c.lower() for c in df.columns]
             return df
         except: return pd.DataFrame()
 
-    @st.cache_data(ttl=300)
-    def fetch_global_indices(_self):
-        tickers = {"加權指數": "^TWII", "道瓊": "^DJI", "那斯達克": "^IXIC", "費半": "^SOX", "日經": "^N225"}
-        data = {}
-        for name, sym in tickers.items():
-            try:
-                stock = yf.Ticker(sym)
-                hist = stock.history(period="5d")
-                if not hist.empty:
-                    latest = hist.iloc[-1]['Close']
-                    prev = hist.iloc[-2]['Close']
-                    chg = latest - prev
-                    pct = (chg / prev) * 100
-                    data[name] = {"price": latest, "change": chg, "pct": pct}
-            except: pass
-        return data
+    def get_news(self):
+        # 模擬鉅亨網頭條 (因直接爬蟲易被鎖，這裡用擬真資料展示功能)
+        # 實戰中可接 RSS Feed
+        return [
+            {"title": "台積電法說會前夕 外資押寶半導體供應鏈", "time": "10:30", "source": "鉅亨網"},
+            {"title": "AI 伺服器需求爆發 廣達、緯創股價再創新高", "time": "10:15", "source": "鉅亨網"},
+            {"title": "美聯準會暗示降息？ 債市資金湧入", "time": "09:50", "source": "鉅亨網"},
+            {"title": "航運運價指數連三漲 長榮陽明後市看好", "time": "09:30", "source": "鉅亨網"},
+            {"title": "台股開盤震盪 重電族群逆勢抗跌", "time": "09:05", "source": "鉅亨網"}
+        ]
 
-engine = MarketEngine()
+engine = DataEngine()
 
 # ==========================================
-# 3. 狀態管理
+# 3. Session 狀態管理
 # ==========================================
+if 'portfolio' not in st.session_state: 
+    # 預設模擬資產
+    st.session_state.portfolio = [
+        {"code": "2330", "name": "台積電", "cost": 980, "qty": 1000}, # 1張
+        {"code": "0050", "name": "元大台灣50", "cost": 180, "qty": 500} # 零股
+    ]
 if 'login_status' not in st.session_state: st.session_state.login_status = False
-if 'account_type' not in st.session_state: st.session_state.account_type = "Simulation"
-if 'balance' not in st.session_state: st.session_state.balance = 1000000
-if 'orders' not in st.session_state: st.session_state.orders = []
-if 'page' not in st.session_state: st.session_state.page = "戰情室"
+if 'broker_id' not in st.session_state: st.session_state.broker_id = ""
 
 # ==========================================
-# 4. 側邊欄：登入系統與導航 (核心修復)
+# 4. 模組一：資產戰情室 (User Dashboard)
 # ==========================================
-with st.sidebar:
-    st.title("🦅 ProQuant X")
+def render_dashboard():
+    st.markdown("<div class='nav-bar'><span class='nav-title'>🌍 ProQuant 資產戰情室</span></div>", unsafe_allow_html=True)
     
-    # [A] 未登入狀態：顯示登入表單
-    if not st.session_state.login_status:
-        st.subheader("🔐 用戶登入")
-        
-        login_mode = st.radio("選擇模式", ["模擬體驗 (Demo)", "券商憑證登入 (Real)"])
-        
-        if login_mode == "券商憑證登入 (Real)":
-            st.info("🔒 安全連線模式")
-            broker = st.selectbox("券商", ["元大證券", "凱基證券", "富邦證券"])
-            uid = st.text_input("帳號/ID")
-            pwd = st.text_input("密碼", type="password")
-            cert = st.file_uploader("上傳憑證 (.pfx)", type=['pfx'])
-            
-            if st.button("驗證登入", type="primary", use_container_width=True):
-                if uid and pwd:
-                    st.session_state.login_status = True
-                    st.session_state.account_type = "Real"
-                    st.success("憑證驗證成功！")
-                    time.sleep(1)
-                    st.rerun()
-                else:
-                    st.error("請輸入帳號密碼")
-        else:
-            st.info("🚀 快速體驗模式")
-            if st.button("進入模擬系統", type="primary", use_container_width=True):
-                st.session_state.login_status = True
-                st.session_state.account_type = "Simulation"
-                st.rerun()
+    # [A] 大盤與新聞區
+    col_idx, col_news = st.columns([3, 2])
     
-    # [B] 已登入狀態：顯示導航與帳戶
-    else:
-        # 顯示帳戶標籤
-        if st.session_state.account_type == "Real":
-            st.markdown("<span class='account-tag-real'>🔴 真實交易帳戶</span>", unsafe_allow_html=True)
-        else:
-            st.markdown("<span class='account-tag-sim'>🟢 模擬體驗帳戶</span>", unsafe_allow_html=True)
-            
-        st.markdown(f"**權益數**: ${st.session_state.balance:,.0f}")
-        
-        st.divider()
-        
-        # 系統模組導航
-        nav = st.radio("功能模組", ["🌍 股市戰情室", "💹 個股操盤室"], index=0 if st.session_state.page=="戰情室" else 1)
-        st.session_state.page = nav
-        
-        st.divider()
-        
-        status_c, status_t = engine.get_market_status()
-        st.caption(f"市場狀態: {status_t}")
-        
-        if st.button("登出"):
-            st.session_state.login_status = False
-            st.rerun()
-
-# ==========================================
-# 5. 主畫面內容 (根據登入狀態)
-# ==========================================
-if not st.session_state.login_status:
-    # 登入前的歡迎畫面
-    st.info("⬅️ 請於左側側邊欄選擇登入模式 (支援 真實憑證 / 模擬體驗)")
-    st.markdown("### 系統特色")
-    st.markdown("- **真實數據連線**：串接 Yahoo Finance 全球即時報價")
-    st.markdown("- **雙模組架構**：整合全球戰情室與專業個股操盤")
-    st.markdown("- **自動交易機器人**：內建 RSI / KD / 均線策略")
-
-else:
-    # 登入後：根據選擇顯示戰情室或操盤室
-    
-    # --- 頁面 A: 戰情室 ---
-    if "戰情室" in st.session_state.page:
-        st.title("🌍 全球股市戰情室")
-        
-        # 指數卡片
-        indices = engine.fetch_global_indices()
-        cols = st.columns(5)
-        keys = list(indices.keys())
-        for i, col in enumerate(cols):
-            if i < len(keys):
-                name = keys[i]
-                d = indices[name]
-                color = "up" if d['change'] > 0 else "down"
-                with col:
+    with col_idx:
+        st.subheader("📊 市場戰情")
+        indices = engine.fetch_indices()
+        c_grid = st.columns(4)
+        for i, (name, data) in enumerate(indices.items()):
+            if i < 4:
+                color = "up" if data['change'] > 0 else "down"
+                with c_grid[i]:
                     st.markdown(f"""
-                    <div class='war-room-card'>
-                        <div class='index-name'>{name}</div>
-                        <div class='index-val {color}'>{d['price']:,.0f}</div>
-                        <div class='{color}'>{d['change']:+.0f} ({d['pct']:+.2f}%)</div>
+                    <div class='card'>
+                        <div class='card-title'>{name}</div>
+                        <div class='card-val {color}'>{data['price']:,.0f}</div>
+                        <div class='{color}'>{data['change']:+.0f} ({data['pct']:+.2f}%)</div>
                     </div>
                     """, unsafe_allow_html=True)
         
         st.divider()
-        
-        # 法人與熱力圖
-        c1, c2 = st.columns([1, 2])
-        with c1:
-            st.subheader("💰 法人資金流向 (預估)")
-            sim_fund = pd.DataFrame({"法人": ["外資", "投信", "自營商"], "買賣超": [np.random.uniform(-30, 30), np.random.uniform(5, 15), np.random.uniform(-5, 5)]})
-            for _, row in sim_fund.iterrows():
-                val = row['買賣超']
-                color = "red" if val > 0 else "green"
-                st.markdown(f"**{row['法人']}**: :{color}[{val:+.2f} 億]")
-                st.progress(min(int(val + 50), 100))
-        
-        with c2:
-            st.subheader("🔥 熱門族群資金 (Sector Heatmap)")
-            sectors = pd.DataFrame({
-                "Sector": ["半導體", "AI 伺服器", "航運", "金融", "生技", "網通", "營建", "塑化"],
-                "Volume": [5000, 3500, 2000, 1800, 1200, 1000, 800, 600],
-                "Change": [2.5, 1.8, -0.5, 0.3, -1.2, 0.8, 1.5, -0.2]
-            })
-            fig = px.treemap(sectors, path=['Sector'], values='Volume', color='Change', color_continuous_scale='RdBu_r', color_continuous_midpoint=0)
-            fig.update_layout(margin=dict(t=0, l=0, r=0, b=0), height=350)
-            st.plotly_chart(fig, use_container_width=True)
-
-    # --- 頁面 B: 操盤室 ---
-    elif "個股操盤" in st.session_state.page:
-        st.title("💹 專業個股操盤")
-        
-        c_search, c_gap = st.columns([3, 1])
-        with c_search:
-            ticker = st.text_input("輸入股票代號", "2330", help="免輸入 .TW")
-        
-        # 數據與繪圖
-        status, _ = engine.get_market_status()
-        period = "1d" if status == "OPEN" else "3mo"
-        interval = "1m" if status == "OPEN" else "1d"
-        
-        df = engine.fetch_data(ticker, period, interval)
+        st.subheader("🔎 個股診斷")
+        ticker = st.text_input("輸入代號 (例如 2330)", "2330")
+        df = engine.fetch_kline(ticker)
         
         if not df.empty:
-            last = df.iloc[-1]
-            prev = df.iloc[-2] if len(df) > 1 else last
-            chg = last['close'] - prev['close']
-            pct = (chg / prev['close']) * 100
-            color = "up" if chg > 0 else "down"
-            
-            # 報價看板
+            # 簡易 K 線
+            fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_width=[0.2, 0.8], vertical_spacing=0.03)
+            fig.add_trace(go.Candlestick(x=df['date'], open=df['open'], high=df['high'], low=df['low'], close=df['close'], name='K'), row=1, col=1)
+            df['ma20'] = df['close'].rolling(20).mean()
+            fig.add_trace(go.Scatter(x=df['date'], y=df['ma20'], line=dict(color='orange'), name='月線'), row=1, col=1)
+            colors = ['red' if c >= o else 'green' for c, o in zip(df['close'], df['open'])]
+            fig.add_trace(go.Bar(x=df['date'], y=df['volume'], marker_color=colors), row=2, col=1)
+            fig.update_layout(height=400, xaxis_rangeslider_visible=False, margin=dict(l=0,r=0,t=0,b=0))
+            st.plotly_chart(fig, use_container_width=True)
+    
+    with col_news:
+        st.subheader("📰 今日頭條 (Anue)")
+        news_list = engine.get_news()
+        for news in news_list:
             st.markdown(f"""
-            <div style='display:flex; align-items:baseline;'>
-                <div style='font-size:32px; font-weight:bold;'>{ticker}</div>
-                <div style='margin-left:20px; font-size:42px; font-weight:bold;' class='{color}'>{last['close']:.2f}</div>
-                <div style='margin-left:15px; font-size:20px;' class='{color}'>{chg:+.2f} ({pct:+.2f}%)</div>
+            <div class='news-item'>
+                <div class='news-title'>{news['title']}</div>
+                <div class='news-meta'>{news['time']} | {news['source']}</div>
             </div>
             """, unsafe_allow_html=True)
             
-            # K線圖
-            fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_width=[0.2, 0.8], vertical_spacing=0.03)
-            fig.add_trace(go.Candlestick(x=df['Date'], open=df['open'], high=df['high'], low=df['low'], close=df['close'], name='K'), row=1, col=1)
-            df['MA5'] = df['close'].rolling(5).mean()
-            df['MA20'] = df['close'].rolling(20).mean()
-            fig.add_trace(go.Scatter(x=df['Date'], y=df['MA5'], line=dict(color='orange'), name='MA5'), row=1, col=1)
-            fig.add_trace(go.Scatter(x=df['Date'], y=df['MA20'], line=dict(color='#2196f3'), name='MA20'), row=1, col=1)
-            colors = ['#eb3f38' if c >= o else '#2daa59' for c, o in zip(df['close'], df['open'])]
-            fig.add_trace(go.Bar(x=df['Date'], y=df['vol'], marker_color=colors), row=2, col=1)
-            fig.update_layout(height=500, xaxis_rangeslider_visible=False, margin=dict(l=10,r=10,t=10,b=10))
-            st.plotly_chart(fig, use_container_width=True)
+    st.divider()
+    
+    # [B] 我的資產庫存 (Portfolio)
+    st.subheader("🎒 我的投資組合")
+    
+    # 新增庫存介面
+    with st.expander("➕ 新增庫存紀錄"):
+        c1, c2, c3, c4 = st.columns(4)
+        new_code = c1.text_input("代號", key="p_code")
+        new_name = c2.text_input("名稱", key="p_name")
+        new_cost = c3.number_input("平均成本", min_value=0.0, key="p_cost")
+        new_qty = c4.number_input("股數 (張數x1000)", min_value=1, step=1000, key="p_qty")
+        if st.button("加入投資組合"):
+            st.session_state.portfolio.append({"code": new_code, "name": new_name, "cost": new_cost, "qty": new_qty})
+            st.success("已新增")
+            st.rerun()
+
+    # 計算資產現值
+    if st.session_state.portfolio:
+        p_data = []
+        total_profit = 0
+        total_assets = 0
+        
+        for item in st.session_state.portfolio:
+            q = engine.fetch_quote(item['code'])
+            curr_price = q['price'] if q else item['cost']
+            mkt_val = curr_price * item['qty']
+            cost_val = item['cost'] * item['qty']
+            profit = mkt_val - cost_val
+            profit_pct = (profit / cost_val) * 100 if cost_val > 0 else 0
             
-            st.divider()
+            total_assets += mkt_val
+            total_profit += profit
             
-            # 下單區
-            c1, c2 = st.columns(2)
-            with c1:
-                st.subheader("⚡ 下單交易")
-                type_ = st.radio("交易類型", ["現股", "當沖", "零股"], horizontal=True)
-                qty_step = 1 if type_ == "零股" else 1
-                qty = st.number_input("數量", 1, 100, 1, step=qty_step)
-                
-                if st.button("立即下單", type="primary", use_container_width=True):
-                    st.session_state.orders.append(f"買進 {ticker} {qty}單位 ({type_})")
-                    st.success(f"委託成功！({type_})")
+            p_data.append({
+                "代號": item['code'], "名稱": item['name'], "持有股數": item['qty'],
+                "成本": item['cost'], "現價": f"{curr_price:.2f}",
+                "損益 ($)": f"{profit:,.0f}", "報酬率 (%)": f"{profit_pct:+.2f}%"
+            })
             
-            with c2:
-                st.subheader("🤖 自動加碼設定")
-                st.selectbox("觸發策略", ["KD 黃金交叉", "RSI 超賣 (<30)", "突破前高"])
-                c_auto1, c_auto2 = st.columns(2)
-                c_auto1.number_input("單筆張數", 1, 10, 1)
-                c_auto2.number_input("最大筆數", 1, 5, 3)
-                st.toggle("啟動自動監控")
-        else:
-            st.error("查無資料，請確認股票代號。")
+        st.dataframe(pd.DataFrame(p_data), use_container_width=True)
+        
+        # 總資產卡片
+        c_tot1, c_tot2 = st.columns(2)
+        color_tot = "up" if total_profit > 0 else "down"
+        c_tot1.metric("總資產現值", f"${total_assets:,.0f}")
+        c_tot2.markdown(f"#### 總未實現損益: <span class='{color_tot}'>${total_profit:,.0f}</span>", unsafe_allow_html=True)
+
+# ==========================================
+# 5. 模組二：自動交易機器人 (Auto-Bot)
+# ==========================================
+def render_autobot():
+    st.markdown("<div class='nav-bar'><span class='nav-title'>🤖 ProQuant 自動交易機器人</span></div>", unsafe_allow_html=True)
+    
+    # [A] 登入驗證區
+    if not st.session_state.login_status:
+        st.warning("🔒 此功能為高階交易功能，請先登入券商憑證")
+        c1, c2 = st.columns(2)
+        with c1:
+            st.subheader("券商憑證登入")
+            broker = st.selectbox("選擇合作券商", ["元大證券", "凱基證券", "富邦證券", "永豐金"])
+            uid = st.text_input("身分證字號")
+            pwd = st.text_input("交易密碼", type="password")
+            cert = st.file_uploader("上傳憑證 (.pfx)", type=['pfx'])
+            if st.button("🔐 驗證並連線", type="primary"):
+                st.session_state.login_status = True
+                st.session_state.broker_id = broker
+                st.success("連線成功！正在讀取 API...")
+                time.sleep(1)
+                st.rerun()
+        return # 未登入不顯示下方功能
+
+    # [B] 已登入：交易設定區
+    st.info(f"✅ 已連線至：{st.session_state.broker_id} (API Mode: Active)")
+    
+    col_chart, col_setting = st.columns([1, 1])
+    
+    with col_setting:
+        st.markdown("### ⚙️ 策略參數設定")
+        st.caption("設定指定價格觸發，並預設停利損點位")
+        
+        target_code = st.text_input("監控代號", "2330", key="bot_code")
+        
+        # 抓取目前價格當參考
+        q = engine.fetch_quote(target_code)
+        if q:
+            st.metric("目前市價", f"{q['price']}", f"{q['change']} ({q['pct']:.2f}%)")
+        
+        st.divider()
+        
+        # 核心邏輯：價格觸發 + 損益管理
+        c_b1, c_b2 = st.columns(2)
+        trigger_price = c_b1.number_input("🎯 觸發買進價", value=q['price'] if q else 1000.0)
+        buy_qty = c_b2.number_input("買進張數", 1, 10, 1)
+        
+        st.markdown("#### 出場條件 (Exit Strategy)")
+        c_s1, c_s2 = st.columns(2)
+        stop_profit = c_s1.number_input("🚀 停利設定 (%)", value=5.0, step=0.5, help="漲幅超過此%數自動賣出")
+        stop_loss = c_s2.number_input("🛑 停損設定 (%)", value=2.0, step=0.5, help="跌幅超過此%數自動賣出")
+        
+        # 模擬計算
+        est_profit_price = trigger_price * (1 + stop_profit/100)
+        est_loss_price = trigger_price * (1 - stop_loss/100)
+        st.caption(f"預估賣出價位: 停利 @ {est_profit_price:.1f} | 停損 @ {est_loss_price:.1f}")
+        
+        active = st.toggle("🔴 啟動自動監控", value=False)
+        
+        if active:
+            st.success("機器人監控中... (請勿關閉視窗)")
+            st.markdown(f"""
+            ```text
+            [System] Monitor Started: {target_code}
+            [Logic] IF Price <= {trigger_price} THEN Buy {buy_qty} lots
+            [Logic] IF Position > 0:
+                    SELL IF Price >= {est_profit_price:.1f} (+{stop_profit}%)
+                    SELL IF Price <= {est_loss_price:.1f} (-{stop_loss}%)
+            ```
+            """)
+
+    with col_chart:
+        st.subheader("📈 監控標的走勢")
+        if q:
+            df = engine.fetch_kline(target_code)
+            if not df.empty:
+                fig = go.Figure(data=[go.Candlestick(x=df['date'], open=df['open'], high=df['high'], low=df['low'], close=df['close'])])
+                # 畫出觸發線
+                fig.add_hline(y=trigger_price, line_dash="dash", line_color="red", annotation_text="買進觸發價")
+                fig.update_layout(height=500, xaxis_rangeslider_visible=False, title=f"{target_code} 即時監控")
+                st.plotly_chart(fig, use_container_width=True)
+
+# ==========================================
+# 6. 主程式進入點 (側邊欄導航)
+# ==========================================
+with st.sidebar:
+    st.title("🦅 ProQuant X")
+    st.markdown("---")
+    
+    # 這裡就是把兩個程式分開的關鍵
+    module = st.radio("選擇系統模組", ["📊 資產戰情室", "🤖 自動交易機器人"])
+    
+    st.markdown("---")
+    st.caption("系統狀態: Online")
+    if st.button("清除快取 (重整)"):
+        st.cache_data.clear()
+        st.rerun()
+
+# 根據選擇渲染不同模組
+if module == "📊 資產戰情室":
+    render_dashboard()
+elif module == "🤖 自動交易機器人":
+    render_autobot()
