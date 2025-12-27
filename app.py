@@ -8,32 +8,33 @@ import yfinance as yf
 from datetime import datetime, time as dt_time
 import pytz
 import time
+import feedparser
 
 # ==========================================
 # 1. 系統初始化 & CSS 風格
 # ==========================================
-st.set_page_config(page_title="ProQuant X 雙模組旗艦", page_icon="🦅", layout="wide")
+st.set_page_config(page_title="ProQuant X 旗艦系統", page_icon="🦅", layout="wide")
 
 st.markdown("""
     <style>
-    /* 全局設定 */
     .stApp { background-color: #f4f7f6; font-family: 'Microsoft JhengHei', sans-serif; }
     
-    /* 頂部導航條模擬 */
+    /* 導航條 */
     .nav-bar { background-color: #fff; padding: 10px; border-bottom: 2px solid #ee3f2d; margin-bottom: 20px; }
     .nav-title { font-size: 24px; font-weight: bold; color: #333; }
     
-    /* 戰情室卡片 */
+    /* 卡片與區塊 */
     .card { background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); text-align: center; }
     .card-title { font-size: 14px; color: #666; }
     .card-val { font-size: 22px; font-weight: bold; }
     
-    /* 漲跌色 */
+    /* 顏色 */
     .up { color: #eb3f38; } .down { color: #2daa59; } .flat { color: #333; }
     
-    /* 新聞區塊 */
+    /* 新聞 */
     .news-item { padding: 10px; border-bottom: 1px solid #eee; background: white; margin-bottom: 5px; border-radius: 5px; }
-    .news-title { font-weight: bold; font-size: 16px; color: #333; }
+    .news-link { text-decoration: none; color: #333; font-weight: bold; font-size: 16px; }
+    .news-link:hover { color: #ee3f2d; }
     .news-meta { font-size: 12px; color: #888; margin-top: 5px; }
     
     /* 隱藏預設元件 */
@@ -42,11 +43,24 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. 核心數據引擎 (已修復 Cache 問題)
+# 2. 核心數據引擎
 # ==========================================
 class DataEngine:
     def __init__(self):
         self.tz = pytz.timezone('Asia/Taipei')
+        # 擴大觀察名單以模擬市場掃描 (涵蓋高價、低價、熱門股)
+        self.watch_list = [
+            "2330", "2317", "2454", "2603", "2609", "2615", "3231", "2382", "2356", "2303", 
+            "2881", "2882", "2891", "2376", "2388", "3037", "3035", "3017", "2368", "3008",
+            "1513", "1519", "1503", "1504", "2515", "2501", "2002", "1605", "2344", "2409",
+            "3481", "6182", "8069", "5483", "6223", "3661", "6531", "3529", "6719", "2327",
+            "2498", "3532", "5347", "3260", "6147", "8046", "3034", "3036", "4968", "2313",
+            "5269", "6278", "6789", "6415", "6669", "5274", "3694", "2486", "6214", "8028",
+            "2618", "2610", "2606", "2605", "1101", "1102", "1216", "1301", "1303", "1326",
+            "1402", "1476", "1560", "1590", "1609", "1702", "1708", "1710", "1717", "1722",
+            "1723", "1736", "1760", "1789", "1795", "1802", "1904", "1907", "1909", "2006",
+            "2014", "2027", "2049", "2059", "2103", "2104", "2105", "2106", "2201", "2204"
+        ]
 
     def get_market_status(self):
         now = datetime.now(self.tz)
@@ -54,7 +68,6 @@ class DataEngine:
         if dt_time(9, 0) <= now.time() <= dt_time(13, 30): return "OPEN"
         return "CLOSED"
 
-    # 關鍵修正：將 self 改為 _self，告訴 Streamlit 忽略雜湊檢查
     @st.cache_data(ttl=60)
     def fetch_quote(_self, ticker):
         if not ticker.endswith('.TW') and not ticker.startswith('^'): ticker += '.TW'
@@ -64,25 +77,24 @@ class DataEngine:
             if df.empty: return None
             last = df.iloc[-1]
             prev = df.iloc[-2]
+            try: name = stock.info.get('longName', ticker)
+            except: name = ticker
             return {
-                "price": last['Close'], "change": last['Close'] - prev['Close'],
+                "name": name, "price": last['Close'], "change": last['Close'] - prev['Close'],
                 "pct": (last['Close'] - prev['Close']) / prev['Close'] * 100,
                 "vol": last['Volume'], "open": last['Open'], "high": last['High'], "low": last['Low']
             }
         except: return None
 
-    # 關鍵修正：將 self 改為 _self
     @st.cache_data(ttl=300)
     def fetch_indices(_self):
         targets = {"加權指數": "^TWII", "櫃買指數": "^TWOII", "道瓊": "^DJI", "那斯達克": "^IXIC", "費半": "^SOX"}
         res = {}
         for name, sym in targets.items():
-            # 這裡呼叫也要改成 _self
             q = _self.fetch_quote(sym)
             if q: res[name] = q
         return res
 
-    # 關鍵修正：將 self 改為 _self
     @st.cache_data(ttl=60)
     def fetch_kline(_self, ticker):
         if not ticker.endswith('.TW'): ticker += '.TW'
@@ -95,14 +107,68 @@ class DataEngine:
             return df
         except: return pd.DataFrame()
 
-    def get_news(self):
-        return [
-            {"title": "台積電法說會前夕 外資押寶半導體供應鏈", "time": "10:30", "source": "鉅亨網"},
-            {"title": "AI 伺服器需求爆發 廣達、緯創股價再創新高", "time": "10:15", "source": "鉅亨網"},
-            {"title": "美聯準會暗示降息？ 債市資金湧入", "time": "09:50", "source": "鉅亨網"},
-            {"title": "航運運價指數連三漲 長榮陽明後市看好", "time": "09:30", "source": "鉅亨網"},
-            {"title": "台股開盤震盪 重電族群逆勢抗跌", "time": "09:05", "source": "鉅亨網"}
-        ]
+    @st.cache_data(ttl=300)
+    def get_real_news(_self):
+        rss_url = "https://news.cnyes.com/rss/cat/twstock"
+        try:
+            feed = feedparser.parse(rss_url)
+            news_items = []
+            for entry in feed.entries[:6]:
+                t = entry.published_parsed
+                time_str = f"{t.tm_hour:02}:{t.tm_min:02}" if t else "最新"
+                news_items.append({"title": entry.title, "link": entry.link, "time": time_str, "source": "鉅亨網"})
+            return news_items
+        except: return [{"title": "新聞載入失敗", "link": "#", "time": "--", "source": "系統"}]
+
+    # 市場掃描邏輯 (加上篩選功能)
+    @st.cache_data(ttl=60)
+    def scan_market(_self, min_price, max_price, strategy):
+        data_list = []
+        tickers_tw = [f"{x}.TW" for x in _self.watch_list]
+        try:
+            df = yf.download(tickers_tw, period="1d", group_by='ticker', threads=True, progress=False)
+            for code in _self.watch_list:
+                try:
+                    t_code = f"{code}.TW"
+                    if t_code not in df.columns.levels[0]: continue
+                    sub = df[t_code]
+                    if sub.empty: continue
+                    
+                    row = sub.iloc[-1]
+                    price = float(row['Close'])
+                    
+                    # 1. 第一層篩選：價格區間
+                    if not (min_price <= price <= max_price): continue
+                    
+                    open_p = float(row['Open'])
+                    change_pct = (price - open_p) / open_p * 100
+                    vol = int(row['Volume'])
+                    
+                    data_list.append({
+                        "代號": code,
+                        "股價": round(price, 2),
+                        "漲跌幅(%)": round(change_pct, 2),
+                        "成交量": vol,
+                        "abs_change": abs(change_pct) # 輔助排序用
+                    })
+                except: continue
+                
+            res_df = pd.DataFrame(data_list)
+            if res_df.empty: return res_df
+            
+            # 2. 第二層篩選：策略排序
+            if strategy == "漲跌停 (±10%)":
+                # 找漲跌幅絕對值最大的
+                return res_df.sort_values(by="abs_change", ascending=False).head(10)
+            elif strategy == "爆量強勢股":
+                # 找成交量最大的
+                return res_df.sort_values(by="成交量", ascending=False).head(10)
+            elif strategy == "飆股 (漲幅排行)":
+                # 只找漲最多的
+                return res_df.sort_values(by="漲跌幅(%)", ascending=False).head(10)
+                
+            return res_df
+        except: return pd.DataFrame()
 
 engine = DataEngine()
 
@@ -117,8 +183,14 @@ if 'portfolio' not in st.session_state:
 if 'login_status' not in st.session_state: st.session_state.login_status = False
 if 'broker_id' not in st.session_state: st.session_state.broker_id = ""
 
+def auto_fill_name():
+    code = st.session_state.p_code_input
+    if code:
+        info = engine.fetch_quote(code)
+        if info: st.session_state.p_name_input = info['name']
+
 # ==========================================
-# 4. 模組一：資產戰情室 (User Dashboard)
+# 4. 模組一：資產戰情室
 # ==========================================
 def render_dashboard():
     st.markdown("<div class='nav-bar'><span class='nav-title'>🌍 ProQuant 資產戰情室</span></div>", unsafe_allow_html=True)
@@ -142,27 +214,43 @@ def render_dashboard():
                     """, unsafe_allow_html=True)
         
         st.divider()
-        st.subheader("🔎 個股診斷")
-        ticker = st.text_input("輸入代號 (例如 2330)", "2330")
-        df = engine.fetch_kline(ticker)
+        st.subheader("🔥 市場熱點排行 (Market Scanner)")
         
-        if not df.empty:
-            fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_width=[0.2, 0.8], vertical_spacing=0.03)
-            fig.add_trace(go.Candlestick(x=df['date'], open=df['open'], high=df['high'], low=df['low'], close=df['close'], name='K'), row=1, col=1)
-            df['ma20'] = df['close'].rolling(20).mean()
-            fig.add_trace(go.Scatter(x=df['date'], y=df['ma20'], line=dict(color='orange'), name='月線'), row=1, col=1)
-            colors = ['red' if c >= o else 'green' for c, o in zip(df['close'], df['open'])]
-            fig.add_trace(go.Bar(x=df['date'], y=df['volume'], marker_color=colors), row=2, col=1)
-            fig.update_layout(height=400, xaxis_rangeslider_visible=False, margin=dict(l=0,r=0,t=0,b=0))
-            st.plotly_chart(fig, use_container_width=True)
-    
+        # --- 搜尋條件設定區 ---
+        with st.container():
+            st.info("💡 請設定篩選條件以開始搜尋")
+            c_s1, c_s2, c_s3, c_s4 = st.columns([2, 2, 3, 2])
+            
+            # 條件 1: 價格區間
+            min_p = c_s1.number_input("最低價 ($)", value=10, min_value=1)
+            max_p = c_s2.number_input("最高價 ($)", value=1000, min_value=1)
+            
+            # 條件 2: 策略
+            strat = c_s3.selectbox("篩選策略", ["漲跌停 (±10%)", "爆量強勢股", "飆股 (漲幅排行)"])
+            
+            # 按鈕觸發
+            start_scan = c_s4.button("🔍 開始搜尋", use_container_width=True, type="primary")
+        
+        if start_scan:
+            with st.spinner("正在掃描全市場數據..."):
+                scan_res = engine.scan_market(min_p, max_p, strat)
+                
+                if not scan_res.empty:
+                    st.success(f"搜尋完成！符合條件前 10 名：")
+                    st.dataframe(
+                        scan_res.style.format({"股價": "{:.2f}", "漲跌幅(%)": "{:+.2f}%", "成交量": "{:,}"}),
+                        use_container_width=True
+                    )
+                else:
+                    st.warning("⚠️ 查無符合條件的股票，請調整價格區間。")
+
     with col_news:
         st.subheader("📰 今日頭條 (Anue)")
-        news_list = engine.get_news()
+        news_list = engine.get_real_news()
         for news in news_list:
             st.markdown(f"""
             <div class='news-item'>
-                <div class='news-title'>{news['title']}</div>
+                <a href='{news['link']}' target='_blank' class='news-link'>{news['title']}</a>
                 <div class='news-meta'>{news['time']} | {news['source']}</div>
             </div>
             """, unsafe_allow_html=True)
@@ -170,44 +258,40 @@ def render_dashboard():
     st.divider()
     
     st.subheader("🎒 我的投資組合")
-    with st.expander("➕ 新增庫存紀錄"):
+    with st.expander("➕ 新增庫存紀錄", expanded=False):
         c1, c2, c3, c4 = st.columns(4)
-        new_code = c1.text_input("代號", key="p_code")
-        new_name = c2.text_input("名稱", key="p_name")
-        new_cost = c3.number_input("平均成本", min_value=0.0, key="p_cost")
-        new_qty = c4.number_input("股數 (張數x1000)", min_value=1, step=1000, key="p_qty")
-        if st.button("加入投資組合"):
-            st.session_state.portfolio.append({"code": new_code, "name": new_name, "cost": new_cost, "qty": new_qty})
-            st.success("已新增")
-            st.rerun()
+        new_code = c1.text_input("代號", key="p_code_input", on_change=auto_fill_name)
+        new_name = c2.text_input("名稱", key="p_name_input")
+        new_cost = c3.number_input("平均成本", min_value=0.0)
+        new_qty = c4.number_input("股數", min_value=1, step=1000)
+        
+        if st.button("加入"):
+            if new_code:
+                st.session_state.portfolio.append({"code": new_code, "name": new_name, "cost": new_cost, "qty": new_qty})
+                st.success(f"已新增 {new_name}")
+                time.sleep(0.5)
+                st.rerun()
 
     if st.session_state.portfolio:
         p_data = []
-        total_profit = 0
-        total_assets = 0
-        
+        tot_p = 0; tot_a = 0
         for item in st.session_state.portfolio:
             q = engine.fetch_quote(item['code'])
-            curr_price = q['price'] if q else item['cost']
-            mkt_val = curr_price * item['qty']
-            cost_val = item['cost'] * item['qty']
-            profit = mkt_val - cost_val
-            profit_pct = (profit / cost_val) * 100 if cost_val > 0 else 0
-            
-            total_assets += mkt_val
-            total_profit += profit
-            
+            curr = q['price'] if q else item['cost']
+            val = curr * item['qty']
+            cost = item['cost'] * item['qty']
+            prof = val - cost
+            pct = (prof / cost * 100) if cost > 0 else 0
+            tot_a += val; tot_p += prof
             p_data.append({
-                "代號": item['code'], "名稱": item['name'], "持有股數": item['qty'],
-                "成本": item['cost'], "現價": f"{curr_price:.2f}",
-                "損益 ($)": f"{profit:,.0f}", "報酬率 (%)": f"{profit_pct:+.2f}%"
+                "代號": item['code'], "名稱": item['name'], "持有": item['qty'],
+                "成本": item['cost'], "現價": f"{curr:.2f}", "損益": f"{prof:,.0f}", "報酬率": f"{pct:+.2f}%"
             })
-            
         st.dataframe(pd.DataFrame(p_data), use_container_width=True)
         c_tot1, c_tot2 = st.columns(2)
-        color_tot = "up" if total_profit > 0 else "down"
-        c_tot1.metric("總資產現值", f"${total_assets:,.0f}")
-        c_tot2.markdown(f"#### 總未實現損益: <span class='{color_tot}'>${total_profit:,.0f}</span>", unsafe_allow_html=True)
+        color = "up" if tot_p > 0 else "down"
+        c_tot1.metric("總資產", f"${tot_a:,.0f}")
+        c_tot2.markdown(f"#### 總損益: <span class='{color}'>${tot_p:,.0f}</span>", unsafe_allow_html=True)
 
 # ==========================================
 # 5. 模組二：自動交易機器人 (Auto-Bot)
@@ -215,11 +299,13 @@ def render_dashboard():
 def render_autobot():
     st.markdown("<div class='nav-bar'><span class='nav-title'>🤖 ProQuant 自動交易機器人</span></div>", unsafe_allow_html=True)
     
+    # 檢查是否登入
     if not st.session_state.login_status:
         st.warning("🔒 此功能為高階交易功能，請先登入券商憑證")
+        
         c1, c2 = st.columns(2)
         with c1:
-            st.subheader("券商憑證登入")
+            st.subheader("券商憑證登入 (User)")
             broker = st.selectbox("選擇合作券商", ["元大證券", "凱基證券", "富邦證券", "永豐金"])
             uid = st.text_input("身分證字號")
             pwd = st.text_input("交易密碼", type="password")
@@ -227,8 +313,19 @@ def render_autobot():
             if st.button("🔐 驗證並連線", type="primary"):
                 st.session_state.login_status = True
                 st.session_state.broker_id = broker
-                st.success("連線成功！正在讀取 API...")
+                st.success("連線成功！")
                 time.sleep(1)
+                st.rerun()
+                
+        # --- 開發者測試通道 (Developer Backdoor) ---
+        with c2:
+            st.markdown("### 🛠️ 開發人員測試區")
+            st.info("僅供功能測試使用，無需憑證")
+            if st.button("🚀 開發者免登入進入 (Dev Mode)"):
+                st.session_state.login_status = True
+                st.session_state.broker_id = "Dev_Simulator_Mode"
+                st.toast("已切換至開發者模式")
+                time.sleep(0.5)
                 st.rerun()
         return
 
@@ -241,8 +338,7 @@ def render_autobot():
         target_code = st.text_input("監控代號", "2330", key="bot_code")
         
         q = engine.fetch_quote(target_code)
-        if q:
-            st.metric("目前市價", f"{q['price']}", f"{q['change']} ({q['pct']:.2f}%)")
+        if q: st.metric("目前市價", f"{q['price']}", f"{q['change']} ({q['pct']:.2f}%)")
         
         st.divider()
         c_b1, c_b2 = st.columns(2)
