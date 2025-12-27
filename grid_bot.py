@@ -11,36 +11,26 @@ import feedparser
 # ==========================================
 # 1. 系統初始化 & CSS 風格
 # ==========================================
-st.set_page_config(page_title="股市特務 X - 終極版", page_icon="📈", layout="wide")
+st.set_page_config(page_title="股市特務 X - 終極修正版", page_icon="🔥", layout="wide")
 
 st.markdown("""
     <style>
-    /* 全局風格 */
     .stApp { background-color: #f4f7f6; font-family: 'Microsoft JhengHei', sans-serif; }
-    
-    /* 導航條 */
     .nav-bar { 
         background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); 
         padding: 15px; border-radius: 0 0 10px 10px; margin-bottom: 20px; color: white;
         box-shadow: 0 4px 10px rgba(0,0,0,0.1); display: flex; justify-content: space-between; align-items: center;
     }
-    .nav-title { font-size: 24px; font-weight: bold; letter-spacing: 1px; }
+    .nav-title { font-size: 24px; font-weight: bold; }
     .nav-user { font-size: 14px; background: rgba(255,255,255,0.2); padding: 5px 10px; border-radius: 15px; }
-    
-    /* 卡片容器 */
     .card { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); margin-bottom: 15px; }
-    
-    /* 網格表格 */
+    .up { color: #d32f2f; font-weight: bold; } 
+    .down { color: #2e7d32; font-weight: bold; }
     .grid-row { padding: 10px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; }
     .grid-active { background: #e3f2fd; border-left: 5px solid #2196f3; font-weight: bold; }
-    
-    /* 標籤與文字 */
     .tag-sell { background-color: #ffebee; color: #c62828; padding: 2px 6px; border-radius: 4px; font-size: 12px; font-weight: bold; }
     .tag-buy { background-color: #e8f5e9; color: #2e7d32; padding: 2px 6px; border-radius: 4px; font-size: 12px; font-weight: bold; }
     .tag-wait { background-color: #f5f5f5; color: #616161; padding: 2px 6px; border-radius: 4px; font-size: 12px; }
-    .up { color: #d32f2f; font-weight: bold; } 
-    .down { color: #2e7d32; font-weight: bold; }
-
     #MainMenu {visibility: hidden;} footer {visibility: hidden;}
     </style>
     """, unsafe_allow_html=True)
@@ -56,13 +46,14 @@ class DataEngine:
             "0056": "元大高股息", "00878": "國泰永續高股息", "00632R": "元大台灣50反1",
             "^TWII": "加權指數", "^TWOII": "櫃買指數", "^DJI": "道瓊", "^IXIC": "那斯達克", "^SOX": "費半"
         }
-        self.watch_list = ["2330", "2317", "2454", "2603", "2609", "2615", "3231", "2382", "2356", "2303"]
+        # 模擬掃描用的觀察名單 (因無法真的掃描全台股)
+        self.watch_list = ["2330", "2317", "2454", "2603", "2609", "2615", "3231", "2382", "2356", "2303", "1513", "1519", "3035", "3037", "8069", "5483"]
 
     def get_stock_name(self, ticker):
         clean = ticker.replace('.TW', '')
         return self.name_map.get(clean, ticker)
 
-    @st.cache_data(ttl=60)
+    @st.cache_data(ttl=30)
     def fetch_quote(_self, ticker):
         if not ticker.endswith('.TW') and not ticker.startswith('^') and ticker.isdigit(): ticker += '.TW'
         try:
@@ -110,21 +101,27 @@ class DataEngine:
         except: return pd.DataFrame()
 
     @st.cache_data(ttl=60)
-    def scan_market(_self, min_p, max_p, strategy):
+    def scan_market(_self, strategy):
+        # 修正：依照策略進行真正的排序
         data_list = []
         try:
             for code in _self.watch_list:
                 q = _self.fetch_quote(code)
-                if q and min_p <= q['price'] <= max_p:
+                if q:
                     data_list.append({
                         "代號": code, "名稱": q['name'], "股價": q['price'], 
                         "漲跌幅": q['pct'], "成交量": q['vol'], "abs_change": abs(q['pct'])
                     })
             res = pd.DataFrame(data_list)
             if res.empty: return res
-            if strategy == "漲跌停 (±10%)": return res.sort_values(by="abs_change", ascending=False)
-            elif strategy == "爆量強勢股": return res.sort_values(by="成交量", ascending=False)
-            elif strategy == "飆股 (漲幅排行)": return res.sort_values(by="漲跌幅", ascending=False)
+            
+            # 策略邏輯
+            if strategy == "漲幅排行 (飆股)": 
+                return res.sort_values(by="漲跌幅", ascending=False)
+            elif strategy == "爆量強勢股": 
+                return res.sort_values(by="成交量", ascending=False)
+            elif strategy == "跌深反彈": 
+                return res.sort_values(by="漲跌幅", ascending=True)
             return res
         except: return pd.DataFrame()
 
@@ -133,8 +130,8 @@ class DataEngine:
         headers = {"Content-Type": "application/json", "Authorization": "Bearer " + token}
         data = {"to": user_id, "messages": [{"type": "text", "text": message}]}
         try:
-            requests.post(url, headers=headers, json=data)
-            return True
+            r = requests.post(url, headers=headers, json=data)
+            return r.status_code == 200
         except: return False
     
     @st.cache_data(ttl=300)
@@ -185,8 +182,6 @@ def plot_chart(df, title, levels=None, current_price=None, upper_limit=None, low
     if current_price: fig.add_hline(y=current_price, line_color="#2196f3", line_width=1.5, annotation_text="現價")
 
     fig.update_layout(title=title, height=400, xaxis_rangeslider_visible=False, margin=dict(l=10,r=10,t=30,b=10), paper_bgcolor='white', plot_bgcolor='white')
-    fig.update_xaxes(showgrid=True, gridcolor='#eee')
-    fig.update_yaxes(showgrid=True, gridcolor='#eee')
     return fig
 
 # 費用計算
@@ -212,12 +207,14 @@ if 'broker_name' not in st.session_state: st.session_state.broker_name = ""
 if 'user_role' not in st.session_state: st.session_state.user_role = "訪客"
 if 'balance' not in st.session_state: st.session_state.balance = 500000 
 if 'fee_discount' not in st.session_state: st.session_state.fee_discount = 0.6 
+if 'line_token' not in st.session_state: st.session_state.line_token = ""
+if 'line_uid' not in st.session_state: st.session_state.line_uid = ""
 
 # ==========================================
-# 共用元件：台股小金庫 (Treasury)
+# 4. 共用模組：台股小金庫 (修正版：含刪除功能)
 # ==========================================
 def render_treasury():
-    st.markdown("### 💰 台股小金庫 (My Treasury)")
+    st.markdown("### 💰 台股小金庫 (Treasury)")
     st.markdown("<div class='card'>", unsafe_allow_html=True)
     
     # 顯示列表
@@ -226,7 +223,7 @@ def render_treasury():
         total_profit = 0
         for item in st.session_state.portfolio:
             pq = engine.fetch_quote(item['code'])
-            curr = pq['price'] if pq else item['cost'] # 若抓不到用成本價
+            curr = pq['price'] if pq else item['cost'] 
             prof = (curr - item['cost']) * item['qty']
             total_profit += prof
             
@@ -239,36 +236,48 @@ def render_treasury():
                 "預估損益": prof
             })
         
-        # 總資產摘要
         st.metric("目前庫存總損益", f"${total_profit:,.0f}", delta=total_profit)
         st.dataframe(pd.DataFrame(p_data).style.format({"成本":"{:.2f}", "現價":"{:.2f}", "預估損益":"{:.0f}"}), use_container_width=True)
     else:
         st.info("金庫目前空空如也，快去新增吧！")
 
-    st.markdown("---")
-    # 新增功能
-    with st.expander("➕ 新增資產到小金庫", expanded=False):
+    # 功能區：新增與刪除
+    tab_add, tab_del = st.tabs(["➕ 新增庫存", "🗑️ 刪除/管理"])
+    
+    with tab_add:
         c1, c2, c3, c4 = st.columns(4)
         pc = c1.text_input("代號", key="t_c")
         pn = c2.text_input("名稱 (選填)", key="t_n")
         pco = c3.number_input("平均成本", min_value=0.0, key="t_co")
         pq = c4.number_input("持有股數", min_value=1, step=1000, key="t_q")
-        
-        if st.button("加入金庫", key="btn_add_treasury"):
+        if st.button("加入金庫"):
             if pc:
-                # 自動抓名稱
                 if not pn:
                     q_info = engine.fetch_quote(pc)
                     pn = q_info['name'] if q_info else pc
                 st.session_state.portfolio.append({"code": pc, "name": pn, "cost": pco, "qty": pq})
                 st.success(f"已加入 {pn}")
                 st.rerun()
-            else:
-                st.error("請輸入代號")
+            else: st.error("請輸入代號")
+
+    with tab_del:
+        if st.session_state.portfolio:
+            # 製作選單
+            options = [f"{i['code']} - {i['name']} (成本:{i['cost']})" for i in st.session_state.portfolio]
+            selected = st.multiselect("選擇要刪除的項目", options)
+            if st.button("確認刪除選取項目"):
+                # 執行刪除
+                new_p = [i for i in st.session_state.portfolio if f"{i['code']} - {i['name']} (成本:{i['cost']})" not in selected]
+                st.session_state.portfolio = new_p
+                st.success("刪除成功！")
+                st.rerun()
+        else:
+            st.caption("無項目可刪除")
+            
     st.markdown("</div>", unsafe_allow_html=True)
 
 # ==========================================
-# 4. 模組：股市情報站 (Dashboard)
+# 5. 主頁面：股市情報站 (修正版：含策略掃描)
 # ==========================================
 def render_dashboard():
     st.markdown(f"""
@@ -333,11 +342,13 @@ def render_dashboard():
                 st.link_button("鉅亨網", f"https://stock.cnyes.com/market/TWS:{ticker}:STOCK")
 
         st.divider()
-        # C. 掃描
-        with st.expander("🔥 熱點掃描"):
-             if st.button("掃描飆股"):
-                 res = engine.scan_market(10, 1000, "飆股 (漲幅排行)")
-                 st.dataframe(res)
+        # C. 掃描 (修正：恢復下拉選單與排序邏輯)
+        with st.expander("🔥 熱點掃描 (Scanner)", expanded=False):
+             c1, c2 = st.columns([2, 1])
+             strat = c1.selectbox("選擇策略", ["漲幅排行 (飆股)", "爆量強勢股", "跌深反彈"])
+             if c2.button("開始掃描"):
+                 res = engine.scan_market(strat)
+                 st.dataframe(res, use_container_width=True)
 
     with col_news:
         st.subheader("📰 即時新聞")
@@ -346,14 +357,13 @@ def render_dashboard():
             st.markdown(f"<div class='card' style='padding:10px;'><a href='{n['link']}' target='_blank'>{n['title']}</a><br><small>{n['time']}</small></div>", unsafe_allow_html=True)
         
         st.divider()
-        # D. 台股小金庫 (在 Dashboard 也顯示)
         render_treasury()
 
 # ==========================================
-# 5. 模組：網格戰神 (Grid Bot) - 修正版
+# 6. 模組：網格戰神 (修正版：恢復模擬登入與Line)
 # ==========================================
 def render_grid_bot():
-    # 1. 權限檢查 (模擬登入)
+    # 1. 權限檢查 (強制模擬登入)
     if not st.session_state.login_status:
         st.markdown("<div class='nav-bar'><span class='nav-title'>⚡ 網格戰神 (鎖定中)</span></div>", unsafe_allow_html=True)
         
@@ -393,7 +403,7 @@ def render_grid_bot():
     </div>""", unsafe_allow_html=True)
 
     # 設定區
-    with st.expander("🔧 戰略指揮中心 (點擊收合)", expanded=True):
+    with st.expander("🔧 戰略指揮中心 (參數設定)", expanded=True):
         c1, c2, c3 = st.columns([1, 1, 1])
         with c1:
             st.markdown("#### 1. 標的與資金")
@@ -468,28 +478,42 @@ def render_grid_bot():
 
                         st.markdown(f"<div class='{row_s}'><div><b>${p:.2f}</b> {info}</div><div><span class='{css}'>{action}</span></div></div>", unsafe_allow_html=True)
             
-            # Line
-            l_t = st.text_input("Token", type="password", key="lt")
-            l_u = st.text_input("UID", key="lu")
-            if st.button("📤 Line 通知"):
-                if l_t: engine.send_line_push(l_t, l_u, f"網格報告: {ticker} 現價{cur_price}")
+            # LINE 通知功能 (修正：恢復顯示)
+            st.markdown("#### 📢 LINE 通知設定")
+            st.caption("將目前的計算結果傳送到 LINE")
+            
+            # 使用 session state 記住 Token
+            st.session_state.line_token = st.text_input("Token", type="password", value=st.session_state.line_token, key="lt")
+            st.session_state.line_uid = st.text_input("User ID", value=st.session_state.line_uid, key="lu")
+            
+            if st.button("📤 發送報告"):
+                 if st.session_state.line_token:
+                     msg = f"【網格戰神報告】\n標的: {ticker}\n現價: {cur_price}\n建議操作區間: {lower}~{upper}\n帳戶餘額: {st.session_state.balance}"
+                     if engine.send_line_push(st.session_state.line_token, st.session_state.line_uid, msg): 
+                         st.success("已發送 LINE 通知")
+                     else: st.error("發送失敗，請檢查 Token")
+                 else:
+                     st.error("請輸入 LINE Token")
+                     
             st.markdown("</div>", unsafe_allow_html=True)
     
     st.divider()
-    # [新增] 在網格戰神下方，加入台股小金庫
     render_treasury()
 
 # ==========================================
-# 6. 主程式導航
+# 7. 主程式導航
 # ==========================================
 with st.sidebar:
-    st.title("🛡️ 股市特務 X")
-    st.caption("Ultimate Ver. 2.1")
+    st.title("🔥 股市特務 X")
+    st.caption("Final Fixed Ver.")
     st.markdown("---")
     
     if st.session_state.login_status:
         st.success(f"已登入: {st.session_state.broker_name}")
-        if st.button("登出"): st.session_state.login_status = False; st.rerun()
+        # 提供登出按鈕，方便測試模擬登入畫面
+        if st.button("登出 (重新模擬登入)"): 
+            st.session_state.login_status = False
+            st.rerun()
     
     module = st.radio("功能導航", ["📊 股市情報站", "⚡ 網格戰神"])
     st.markdown("---")
