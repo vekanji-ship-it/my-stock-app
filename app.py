@@ -227,8 +227,8 @@ def plot_chinese_chart(df, title, trigger_price=None):
         increasing_line_color='#d32f2f', decreasing_line_color='#2e7d32'
     )])
     
-    # 全中文 Tooltip
-    fig.update_traces(hovertemplate='<b>日期</b>: %{x}<br><b>開盤</b>: %{open}<br><b>收盤</b>: %{close}<br><b>最高</b>: %{high}<br><b>最低</b>: %{low}')
+    # 全中文 Tooltip (這裡強制覆蓋預設的英文)
+    fig.update_traces(hovertemplate='<b>日期</b>: %{x}<br><b>開盤</b>: %{open:.2f}<br><b>收盤</b>: %{close:.2f}<br><b>最高</b>: %{high:.2f}<br><b>最低</b>: %{low:.2f}')
     
     if trigger_price:
         fig.add_hline(y=trigger_price, line_dash="dash", line_color="blue", annotation_text="觸發買進價")
@@ -275,7 +275,8 @@ def render_dashboard():
         ticker = st.text_input("輸入代號 (例如 2330)", "2330")
         df = engine.fetch_kline(ticker)
         if not df.empty:
-            st.plotly_chart(plot_chinese_chart(df, f"{ticker} 技術走勢"), use_container_width=True)
+            # 加上唯一的 key 避免衝突
+            st.plotly_chart(plot_chinese_chart(df, f"{ticker} 技術走勢"), use_container_width=True, key="search_chart")
         
         st.divider()
         
@@ -406,7 +407,8 @@ def render_bot():
                 # 顯示該機器人監控的股票圖表
                 df_bot = engine.fetch_kline(new_code)
                 if not df_bot.empty:
-                    st.plotly_chart(plot_chinese_chart(df_bot, f"{new_code} 監控走勢", new_price), use_container_width=True)
+                    # ⚠️ 關鍵修正：加上 key=f"bot_chart_{i}" 解決 Duplicate ID 報錯
+                    st.plotly_chart(plot_chinese_chart(df_bot, f"{new_code} 監控走勢", new_price), use_container_width=True, key=f"bot_chart_{i}")
                 
                 if not disabled:
                     st.session_state.bot_instances[i].update({'code':new_code, 'price':new_price, 'qty':new_qty})
