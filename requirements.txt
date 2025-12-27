@@ -7,3 +7,4 @@ pytz
 lxml
 html5lib
 feedparser
+requests
