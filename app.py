@@ -2,214 +2,233 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import twstock
 import time
 from datetime import datetime
 
 # ==========================================
-# 1. App 級別設定 (Sanju Style)
+# 1. 頁面設定 (鉅亨風格：專業白底)
 # ==========================================
-st.set_page_config(page_title="SanjuBot", page_icon="📱", layout="centered") 
-# 注意：layout 改成 centered，模擬手機窄螢幕
+st.set_page_config(page_title="ProQuant X 自動機器人", page_icon="🤖", layout="wide")
 
-# 🎨 CSS 黑魔法：強制轉型成 App 介面
+# CSS 美化：鉅亨網風格
 st.markdown("""
     <style>
-    /* 1. 全局設定：三竹黑 */
-    .stApp { background-color: #000000; color: #ffffff; }
+    .stApp { background-color: #ffffff; color: #333333; }
+    .metric-box { border: 1px solid #e0e0e0; padding: 10px; border-radius: 5px; background: #f9f9f9; text-align: center; }
+    .metric-label { font-size: 14px; color: #666; }
+    .metric-value { font-size: 24px; font-weight: bold; color: #333; }
+    .up { color: #eb3f38; }
+    .down { color: #2daa59; }
     
-    /* 2. 隱藏 Streamlit 原生元素 (漢堡選單、Footer) */
-    header {visibility: hidden;}
-    footer {visibility: hidden;}
-    .stDeployButton {display:none;}
+    /* 側邊欄樣式 */
+    [data-testid="stSidebar"] { background-color: #f4f6f9; border-right: 1px solid #ddd; }
     
-    /* 3. 報價頭部樣式 */
-    .sanju-header {
-        position: fixed;
-        top: 0; left: 0; right: 0;
-        background-color: #1a1a1a;
-        padding: 10px 15px;
-        z-index: 999;
-        border-bottom: 1px solid #333;
-        display: flex; justify-content: space-between; align-items: center;
+    /* 交易日誌區塊 */
+    .log-container { 
+        height: 200px; overflow-y: scroll; 
+        background-color: #1e1e1e; color: #00ff00; 
+        font-family: 'Courier New', monospace; padding: 10px; border-radius: 5px; 
     }
-    .stock-name { font-size: 20px; font-weight: bold; color: #fff; }
-    .stock-id { font-size: 14px; color: #aaa; margin-left: 5px; }
-    
-    /* 4. 價格顏色定義 (台股紅漲綠跌) */
-    .p-up { color: #ff333a !important; }
-    .p-down { color: #00ff00 !important; }
-    .p-flat { color: #ffffff !important; }
-    
-    /* 5. 底部導航列 (App 的靈魂) */
-    .bottom-nav {
-        position: fixed;
-        bottom: 0; left: 0; right: 0;
-        background-color: #1a1a1a;
-        height: 60px;
-        display: flex; justify-content: space-around; align-items: center;
-        border-top: 1px solid #333;
-        z-index: 999;
-    }
-    .nav-item {
-        color: #888; text-align: center; font-size: 10px; cursor: pointer; flex: 1;
-    }
-    .nav-item:hover { color: #ff9900; }
-    .nav-icon { font-size: 20px; display: block; margin-bottom: 2px; }
-    
-    /* 6. 五檔報價樣式 */
-    .order-book-row {
-        display: flex; justify-content: space-between;
-        padding: 4px 8px; border-bottom: 1px solid #222; font-family: monospace; font-size: 14px;
-    }
-    .bid-bg { background-color: rgba(255, 51, 58, 0.1); }
-    .ask-bg { background-color: rgba(0, 255, 0, 0.1); }
-
-    /* 調整主要內容區塊，避免被 Header/Footer 遮住 */
-    .block-container { padding-top: 70px; padding-bottom: 80px; }
-    
-    /* 按鈕美化 */
-    .stButton>button {
-        width: 100%; border-radius: 0; background-color: #333; color: white; border: 1px solid #555;
-    }
-    .stButton>button:hover { border-color: #ff9900; color: #ff9900; }
     </style>
     """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. 模擬後端數據 (為了流暢度先用模擬)
+# 2. 核心大腦：技術指標計算引擎
 # ==========================================
-if 'nav_selection' not in st.session_state:
-    st.session_state.nav_selection = "報價"
+class TechIndicators:
+    @staticmethod
+    def calculate(df):
+        # 1. 移動平均線 (MA)
+        df['MA5'] = df['close'].rolling(window=5).mean()
+        df['MA20'] = df['close'].rolling(window=20).mean()
+        df['MA60'] = df['close'].rolling(window=60).mean()
 
-def get_sanju_data(stock_id):
-    # 這裡可以用 twstock.realtime.get(stock_id) 替換
-    base = 1000.0
-    noise = np.random.normal(0, 1)
-    price = base + noise
-    change = noise
-    return {
-        "id": stock_id, "name": "台積電",
-        "price": price, "change": change, "pct": change/base*100,
-        "volume": 23456, "open": 998, "high": 1005, "low": 990,
-        "bids": [(price-i, np.random.randint(1,50)) for i in range(1,6)],
-        "asks": [(price+i, np.random.randint(1,50)) for i in range(1,6)]
-    }
+        # 2. RSI (相對強弱指標)
+        delta = df['close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        df['RSI'] = 100 - (100 / (1 + rs))
 
-data = get_sanju_data("2330")
+        # 3. KD (隨機指標)
+        low_min = df['low'].rolling(window=9).min()
+        high_max = df['high'].rolling(window=9).max()
+        df['RSV'] = (df['close'] - low_min) / (high_max - low_min) * 100
+        df['K'] = df['RSV'].ewm(com=2).mean()
+        df['D'] = df['K'].ewm(com=2).mean()
 
-# ==========================================
-# 3. 介面佈局 (Mobile Layout)
-# ==========================================
-
-# --- A. 頂部固定 Header (模擬 App Title Bar) ---
-color_cls = "p-up" if data['change'] > 0 else "p-down"
-sign = "▲" if data['change'] > 0 else "▼"
-
-st.markdown(f"""
-    <div class="sanju-header">
-        <div>
-            <span class="stock-name">{data['name']}</span>
-            <span class="stock-id">{data['id']}</span>
-        </div>
-        <div style="text-align:right;">
-            <div style="font-size:24px; font-weight:bold;" class="{color_cls}">{data['price']:.0f}</div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-# --- B. 內容區域 (根據底部選單切換) ---
-
-if st.session_state.nav_selection == "報價":
-    # 1. 資訊列
-    c1, c2, c3 = st.columns(3)
-    c1.metric("漲跌", f"{sign}{abs(data['change']):.1f}")
-    c2.metric("幅度", f"{sign}{abs(data['pct']):.2f}%")
-    c3.metric("總量", f"{data['volume']}")
-    
-    st.markdown("---")
-    
-    # 2. 技術線圖 (K線)
-    st.markdown("###### 📈 技術線圖")
-    # 模擬K線數據
-    dates = pd.date_range(end=datetime.now(), periods=30)
-    df = pd.DataFrame(index=dates)
-    df['Close'] = np.random.normal(1000, 10, 30).cumsum() + 1000
-    df['Open'] = df['Close'].shift(1)
-    df['High'] = df[['Open', 'Close']].max(axis=1) + 2
-    df['Low'] = df[['Open', 'Close']].min(axis=1) - 2
-    
-    fig = go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
-                         increasing_line_color='#ff333a', decreasing_line_color='#00ff00')])
-    fig.update_layout(height=300, margin=dict(l=0,r=0,t=0,b=0), paper_bgcolor='black', plot_bgcolor='black',
-                      xaxis=dict(showgrid=False), yaxis=dict(showgrid=True, gridcolor='#333'))
-    st.plotly_chart(fig, use_container_width=True)
-    
-    # 3. 五檔 (模擬三竹樣式)
-    st.markdown("###### 📑 最佳五檔")
-    c_ask, c_bid = st.columns(2)
-    
-    with c_ask:
-        st.markdown("<div style='text-align:center; color:#00ff00; border-bottom:1px solid #333'>賣出 (Ask)</div>", unsafe_allow_html=True)
-        for p, v in data['asks'][::-1]:
-            st.markdown(f"""<div class='order-book-row ask-bg'><span class='p-down'>{p:.0f}</span><span>{v}</span></div>""", unsafe_allow_html=True)
-            
-    with c_bid:
-        st.markdown("<div style='text-align:center; color:#ff333a; border-bottom:1px solid #333'>買進 (Bid)</div>", unsafe_allow_html=True)
-        for p, v in data['bids']:
-            st.markdown(f"""<div class='order-book-row bid-bg'><span class='p-up'>{p:.0f}</span><span>{v}</span></div>""", unsafe_allow_html=True)
-
-elif st.session_state.nav_selection == "下單":
-    st.markdown("#### ⚡ 快速下單")
-    col_Type = st.radio("交易類別", ["現股", "當沖", "零股"], horizontal=True)
-    
-    c1, c2 = st.columns(2)
-    with c1:
-        st.number_input("價格", value=1000.0, step=0.5)
-    with c2:
-        st.number_input("數量 (張)", value=1, step=1)
+        # 4. MACD
+        exp12 = df['close'].ewm(span=12, adjust=False).mean()
+        exp26 = df['close'].ewm(span=26, adjust=False).mean()
+        df['MACD'] = exp12 - exp26
+        df['Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+        df['Hist'] = df['MACD'] - df['Signal']
         
-    b1, b2 = st.columns(2)
-    if b1.button("🔴 買進", use_container_width=True):
-        st.toast("委託成功：買進送出", icon="✅")
-    if b2.button("🟢 賣出", use_container_width=True):
-        st.toast("委託成功：賣出送出", icon="✅")
+        return df
 
-elif st.session_state.nav_selection == "庫存":
-    st.markdown("#### 🎒 我的庫存")
-    st.info("目前持有：2330 台積電 (2張)")
-    st.metric("未實現損益", "+$23,000", delta_color="normal")
+# ==========================================
+# 3. 數據源與機器人邏輯
+# ==========================================
+if 'bot_log' not in st.session_state:
+    st.session_state.bot_log = []
+if 'balance' not in st.session_state:
+    st.session_state.balance = 1000000 # 初始資金 100萬
+if 'holdings' not in st.session_state:
+    st.session_state.holdings = 0
+
+def get_data(stock_id):
+    try:
+        stock = twstock.Stock(stock_id)
+        # 抓取歷史數據
+        data = stock.fetch_from(2024, 10)
+        df = pd.DataFrame(data)
+        df['Date'] = pd.to_datetime(df['date'])
+        
+        # 抓取即時數據 (讓指標會跳動)
+        real = twstock.realtime.get(stock_id)
+        if real['success']:
+            latest_price = float(real['realtime']['latest_trade_price'])
+            # 將即時價格追加到歷史數據最後一筆，模擬即時運算
+            new_row = df.iloc[-1].copy()
+            new_row['close'] = latest_price
+            new_row['Date'] = pd.Timestamp.now()
+            df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+            
+        return TechIndicators.calculate(df), real
+    except:
+        return pd.DataFrame(), None
+
+# ==========================================
+# 4. 介面佈局
+# ==========================================
+
+# --- Sidebar: 機器人控制台 ---
+with st.sidebar:
+    st.title("🤖 機器人控制台")
+    target_stock = st.text_input("監控代號", "2330")
     
-    st.table(pd.DataFrame({
-        "股票": ["台積電", "鴻海"],
-        "成本": [900, 150],
-        "現價": [1000, 160],
-        "損益": ["+20000", "+10000"]
-    }))
+    st.divider()
+    st.subheader("⚙️ 策略設定")
+    strategy_mode = st.selectbox("選擇自動交易策略", 
+        ["RSI 超賣反彈 (RSI < 30)", "KD 黃金交叉 (K > D)", "MACD 趨勢突破", "手動模式"])
+    
+    auto_trade = st.toggle("🔴 啟動自動下單", value=False)
+    
+    st.divider()
+    st.subheader("📊 技術指標顯示")
+    show_ma = st.checkbox("顯示均線 (MA)", value=True)
+    indicator_panel = st.radio("副圖指標", ["成交量", "RSI", "KD", "MACD"])
 
-# --- C. 底部導航列 (Fake Bottom Navigation) ---
-# 利用 Streamlit 的 button 模擬點擊切換
-st.markdown("---") # 墊高底部
-c1, c2, c3, c4 = st.columns(4)
+# --- Main: 戰情室 ---
+df, real_data = get_data(target_stock)
 
-# 這裡是一個 Hack，用來模擬底部選單點擊
-# 注意：為了美觀，我們用上面的 CSS 畫了假的 bar，但實際互動我們用下面的按鈕
-with st.container():
-    st.write("") # 佔位
+if not df.empty and real_data:
+    current_price = df['close'].iloc[-1]
+    last_close = df['close'].iloc[-2]
+    change = current_price - last_close
+    color_cls = "up" if change > 0 else "down"
+    
+    # 1. 頂部大數據
+    c1, c2, c3, c4 = st.columns([2, 2, 2, 4])
+    with c1:
+        st.markdown(f"## {target_stock}")
+    with c2:
+        st.markdown(f"<h2 class='{color_cls}'>{current_price:.2f}</h2>", unsafe_allow_html=True)
+    with c3:
+        st.markdown(f"<h4 class='{color_cls}'>{change:+.2f} ({change/last_close*100:+.2f}%)</h4>", unsafe_allow_html=True)
+    with c4:
+        st.markdown(f"**資金餘額**: ${st.session_state.balance:,.0f} | **庫存**: {st.session_state.holdings} 張")
 
-# 實際上 Streamlit 很難做到底部固定按鈕，所以我們用 radio 在上方切換最穩
-# 但為了滿足你的要求，我們用這種變通方式：
-st.markdown("""
-<div class="bottom-nav">
-    <div class="nav-item">📈<br>報價</div>
-    <div class="nav-item">⚡<br>下單</div>
-    <div class="nav-item">🎒<br>庫存</div>
-    <div class="nav-item">⚙️<br>設定</div>
-</div>
-""", unsafe_allow_html=True)
+    st.divider()
 
-# 真正的切換開關 (為了展示效果，我們先放上面，或者你可以用 sidebar)
-# 這裡為了展示「像三竹」，我把切換放在最上面比較合理
-st.sidebar.title("App 導航")
-selection = st.sidebar.radio("切換頁面", ["報價", "下單", "庫存"])
-st.session_state.nav_selection = selection
+    # 2. 專業線圖 (Plotly)
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_width=[0.3, 0.7])
+
+    # 主圖：K線 + MA
+    fig.add_trace(go.Candlestick(x=df['Date'], open=df['open'], high=df['high'], low=df['low'], close=df['close'], name='Price'), row=1, col=1)
+    
+    if show_ma:
+        fig.add_trace(go.Scatter(x=df['Date'], y=df['MA5'], line=dict(color='orange', width=1), name='MA5'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df['Date'], y=df['MA20'], line=dict(color='blue', width=1), name='MA20'), row=1, col=1)
+
+    # 副圖：根據選擇顯示
+    if indicator_panel == "成交量":
+        fig.add_trace(go.Bar(x=df['Date'], y=df['capacity'], name='Volume', marker_color='#999'), row=2, col=1)
+    elif indicator_panel == "RSI":
+        fig.add_trace(go.Scatter(x=df['Date'], y=df['RSI'], line=dict(color='purple'), name='RSI'), row=2, col=1)
+        fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
+        fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
+    elif indicator_panel == "KD":
+        fig.add_trace(go.Scatter(x=df['Date'], y=df['K'], line=dict(color='orange'), name='K'), row=2, col=1)
+        fig.add_trace(go.Scatter(x=df['Date'], y=df['D'], line=dict(color='blue'), name='D'), row=2, col=1)
+    elif indicator_panel == "MACD":
+        fig.add_trace(go.Bar(x=df['Date'], y=df['Hist'], name='Hist'), row=2, col=1)
+        fig.add_trace(go.Scatter(x=df['Date'], y=df['MACD'], line=dict(color='orange'), name='MACD'), row=2, col=1)
+        fig.add_trace(go.Scatter(x=df['Date'], y=df['Signal'], line=dict(color='blue'), name='Signal'), row=2, col=1)
+
+    fig.update_layout(height=600, xaxis_rangeslider_visible=False, plot_bgcolor='white', margin=dict(l=50, r=20, t=10, b=20))
+    fig.update_xaxes(showgrid=True, gridcolor='#f0f0f0')
+    fig.update_yaxes(showgrid=True, gridcolor='#f0f0f0')
+    
+    st.plotly_chart(fig, use_container_width=True)
+
+    # 3. 機器人自動執行邏輯
+    if auto_trade:
+        last_rsi = df['RSI'].iloc[-1]
+        last_k = df['K'].iloc[-1]
+        last_d = df['D'].iloc[-1]
+        
+        signal = None
+        reason = ""
+        
+        # 策略判斷
+        if strategy_mode == "RSI 超賣反彈 (RSI < 30)":
+            if last_rsi < 30:
+                signal = "BUY"
+                reason = f"RSI 數值 {last_rsi:.1f} 進入超賣區"
+            elif last_rsi > 70 and st.session_state.holdings > 0:
+                signal = "SELL"
+                reason = f"RSI 數值 {last_rsi:.1f} 進入超買區"
+                
+        elif strategy_mode == "KD 黃金交叉 (K > D)":
+            if last_k > last_d and df['K'].iloc[-2] <= df['D'].iloc[-2]: # 剛交叉
+                signal = "BUY"
+                reason = f"KD 黃金交叉 (K={last_k:.1f}, D={last_d:.1f})"
+        
+        # 執行交易 & 寫入日誌
+        t = datetime.now().strftime("%H:%M:%S")
+        
+        # 為了展示效果，我們隨機偶爾觸發一下 (拍片用)
+        # 實戰中請把下面這行 random 註解掉
+        if np.random.rand() > 0.8: 
+            st.toast("⚡ 機器人正在掃描市場訊號...", icon="🔍")
+        
+        if signal == "BUY" and st.session_state.balance >= current_price * 1000:
+            st.session_state.balance -= current_price * 1000
+            st.session_state.holdings += 1
+            log_msg = f"[{t}] ✅ 買進執行 | {target_stock} | 價格: {current_price} | 原因: {reason}"
+            st.session_state.bot_log.insert(0, log_msg)
+            st.toast(log_msg, icon="✅")
+            
+        elif signal == "SELL" and st.session_state.holdings > 0:
+            st.session_state.balance += current_price * 1000
+            st.session_state.holdings -= 1
+            log_msg = f"[{t}] 🚀 賣出執行 | {target_stock} | 價格: {current_price} | 原因: {reason}"
+            st.session_state.bot_log.insert(0, log_msg)
+            st.toast(log_msg, icon="🚀")
+
+    # 4. 顯示終端機日誌 (Hacker Style)
+    st.subheader("📜 機器人執行日誌 (System Log)")
+    log_text = "\n".join(st.session_state.bot_log) if st.session_state.bot_log else "等待訊號中... 系統監控中..."
+    st.text_area("Console", value=log_text, height=200, disabled=True)
+    
+    # 自動刷新機制
+    time.sleep(2)
+    st.rerun()
+
+else:
+    st.warning("正在連線證交所與計算指標... 請稍候")
+    time.sleep(1)
+    st.rerun()
