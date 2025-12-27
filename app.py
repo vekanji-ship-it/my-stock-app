@@ -10,7 +10,7 @@ import pytz
 import time
 
 # ==========================================
-# 1. 系統初始化 & CSS 風格 (鉅亨網配色)
+# 1. 系統初始化 & CSS 風格
 # ==========================================
 st.set_page_config(page_title="ProQuant X 雙模組旗艦", page_icon="🦅", layout="wide")
 
@@ -36,16 +36,13 @@ st.markdown("""
     .news-title { font-weight: bold; font-size: 16px; color: #333; }
     .news-meta { font-size: 12px; color: #888; margin-top: 5px; }
     
-    /* 資產表格 */
-    .portfolio-header { background-color: #333; color: white; padding: 10px; border-radius: 5px 5px 0 0; }
-    
     /* 隱藏預設元件 */
     #MainMenu {visibility: hidden;} footer {visibility: hidden;}
     </style>
     """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. 核心數據引擎
+# 2. 核心數據引擎 (已修復 Cache 問題)
 # ==========================================
 class DataEngine:
     def __init__(self):
@@ -57,8 +54,9 @@ class DataEngine:
         if dt_time(9, 0) <= now.time() <= dt_time(13, 30): return "OPEN"
         return "CLOSED"
 
+    # 關鍵修正：將 self 改為 _self，告訴 Streamlit 忽略雜湊檢查
     @st.cache_data(ttl=60)
-    def fetch_quote(self, ticker):
+    def fetch_quote(_self, ticker):
         if not ticker.endswith('.TW') and not ticker.startswith('^'): ticker += '.TW'
         try:
             stock = yf.Ticker(ticker)
@@ -73,17 +71,20 @@ class DataEngine:
             }
         except: return None
 
+    # 關鍵修正：將 self 改為 _self
     @st.cache_data(ttl=300)
-    def fetch_indices(self):
+    def fetch_indices(_self):
         targets = {"加權指數": "^TWII", "櫃買指數": "^TWOII", "道瓊": "^DJI", "那斯達克": "^IXIC", "費半": "^SOX"}
         res = {}
         for name, sym in targets.items():
-            q = self.fetch_quote(sym)
+            # 這裡呼叫也要改成 _self
+            q = _self.fetch_quote(sym)
             if q: res[name] = q
         return res
 
+    # 關鍵修正：將 self 改為 _self
     @st.cache_data(ttl=60)
-    def fetch_kline(self, ticker):
+    def fetch_kline(_self, ticker):
         if not ticker.endswith('.TW'): ticker += '.TW'
         try:
             stock = yf.Ticker(ticker)
@@ -95,8 +96,6 @@ class DataEngine:
         except: return pd.DataFrame()
 
     def get_news(self):
-        # 模擬鉅亨網頭條 (因直接爬蟲易被鎖，這裡用擬真資料展示功能)
-        # 實戰中可接 RSS Feed
         return [
             {"title": "台積電法說會前夕 外資押寶半導體供應鏈", "time": "10:30", "source": "鉅亨網"},
             {"title": "AI 伺服器需求爆發 廣達、緯創股價再創新高", "time": "10:15", "source": "鉅亨網"},
@@ -111,10 +110,9 @@ engine = DataEngine()
 # 3. Session 狀態管理
 # ==========================================
 if 'portfolio' not in st.session_state: 
-    # 預設模擬資產
     st.session_state.portfolio = [
-        {"code": "2330", "name": "台積電", "cost": 980, "qty": 1000}, # 1張
-        {"code": "0050", "name": "元大台灣50", "cost": 180, "qty": 500} # 零股
+        {"code": "2330", "name": "台積電", "cost": 980, "qty": 1000},
+        {"code": "0050", "name": "元大台灣50", "cost": 180, "qty": 500}
     ]
 if 'login_status' not in st.session_state: st.session_state.login_status = False
 if 'broker_id' not in st.session_state: st.session_state.broker_id = ""
@@ -125,7 +123,6 @@ if 'broker_id' not in st.session_state: st.session_state.broker_id = ""
 def render_dashboard():
     st.markdown("<div class='nav-bar'><span class='nav-title'>🌍 ProQuant 資產戰情室</span></div>", unsafe_allow_html=True)
     
-    # [A] 大盤與新聞區
     col_idx, col_news = st.columns([3, 2])
     
     with col_idx:
@@ -150,7 +147,6 @@ def render_dashboard():
         df = engine.fetch_kline(ticker)
         
         if not df.empty:
-            # 簡易 K 線
             fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_width=[0.2, 0.8], vertical_spacing=0.03)
             fig.add_trace(go.Candlestick(x=df['date'], open=df['open'], high=df['high'], low=df['low'], close=df['close'], name='K'), row=1, col=1)
             df['ma20'] = df['close'].rolling(20).mean()
@@ -173,10 +169,7 @@ def render_dashboard():
             
     st.divider()
     
-    # [B] 我的資產庫存 (Portfolio)
     st.subheader("🎒 我的投資組合")
-    
-    # 新增庫存介面
     with st.expander("➕ 新增庫存紀錄"):
         c1, c2, c3, c4 = st.columns(4)
         new_code = c1.text_input("代號", key="p_code")
@@ -188,7 +181,6 @@ def render_dashboard():
             st.success("已新增")
             st.rerun()
 
-    # 計算資產現值
     if st.session_state.portfolio:
         p_data = []
         total_profit = 0
@@ -212,8 +204,6 @@ def render_dashboard():
             })
             
         st.dataframe(pd.DataFrame(p_data), use_container_width=True)
-        
-        # 總資產卡片
         c_tot1, c_tot2 = st.columns(2)
         color_tot = "up" if total_profit > 0 else "down"
         c_tot1.metric("總資產現值", f"${total_assets:,.0f}")
@@ -225,7 +215,6 @@ def render_dashboard():
 def render_autobot():
     st.markdown("<div class='nav-bar'><span class='nav-title'>🤖 ProQuant 自動交易機器人</span></div>", unsafe_allow_html=True)
     
-    # [A] 登入驗證區
     if not st.session_state.login_status:
         st.warning("🔒 此功能為高階交易功能，請先登入券商憑證")
         c1, c2 = st.columns(2)
@@ -241,37 +230,30 @@ def render_autobot():
                 st.success("連線成功！正在讀取 API...")
                 time.sleep(1)
                 st.rerun()
-        return # 未登入不顯示下方功能
+        return
 
-    # [B] 已登入：交易設定區
     st.info(f"✅ 已連線至：{st.session_state.broker_id} (API Mode: Active)")
     
     col_chart, col_setting = st.columns([1, 1])
     
     with col_setting:
         st.markdown("### ⚙️ 策略參數設定")
-        st.caption("設定指定價格觸發，並預設停利損點位")
-        
         target_code = st.text_input("監控代號", "2330", key="bot_code")
         
-        # 抓取目前價格當參考
         q = engine.fetch_quote(target_code)
         if q:
             st.metric("目前市價", f"{q['price']}", f"{q['change']} ({q['pct']:.2f}%)")
         
         st.divider()
-        
-        # 核心邏輯：價格觸發 + 損益管理
         c_b1, c_b2 = st.columns(2)
         trigger_price = c_b1.number_input("🎯 觸發買進價", value=q['price'] if q else 1000.0)
         buy_qty = c_b2.number_input("買進張數", 1, 10, 1)
         
         st.markdown("#### 出場條件 (Exit Strategy)")
         c_s1, c_s2 = st.columns(2)
-        stop_profit = c_s1.number_input("🚀 停利設定 (%)", value=5.0, step=0.5, help="漲幅超過此%數自動賣出")
-        stop_loss = c_s2.number_input("🛑 停損設定 (%)", value=2.0, step=0.5, help="跌幅超過此%數自動賣出")
+        stop_profit = c_s1.number_input("🚀 停利設定 (%)", value=5.0, step=0.5)
+        stop_loss = c_s2.number_input("🛑 停損設定 (%)", value=2.0, step=0.5)
         
-        # 模擬計算
         est_profit_price = trigger_price * (1 + stop_profit/100)
         est_loss_price = trigger_price * (1 - stop_loss/100)
         st.caption(f"預估賣出價位: 停利 @ {est_profit_price:.1f} | 停損 @ {est_loss_price:.1f}")
@@ -280,15 +262,7 @@ def render_autobot():
         
         if active:
             st.success("機器人監控中... (請勿關閉視窗)")
-            st.markdown(f"""
-            ```text
-            [System] Monitor Started: {target_code}
-            [Logic] IF Price <= {trigger_price} THEN Buy {buy_qty} lots
-            [Logic] IF Position > 0:
-                    SELL IF Price >= {est_profit_price:.1f} (+{stop_profit}%)
-                    SELL IF Price <= {est_loss_price:.1f} (-{stop_loss}%)
-            ```
-            """)
+            st.markdown(f"```text\n[System] Monitor Started: {target_code}\n[Logic] IF Price <= {trigger_price} THEN Buy {buy_qty}\n```")
 
     with col_chart:
         st.subheader("📈 監控標的走勢")
@@ -296,28 +270,23 @@ def render_autobot():
             df = engine.fetch_kline(target_code)
             if not df.empty:
                 fig = go.Figure(data=[go.Candlestick(x=df['date'], open=df['open'], high=df['high'], low=df['low'], close=df['close'])])
-                # 畫出觸發線
                 fig.add_hline(y=trigger_price, line_dash="dash", line_color="red", annotation_text="買進觸發價")
                 fig.update_layout(height=500, xaxis_rangeslider_visible=False, title=f"{target_code} 即時監控")
                 st.plotly_chart(fig, use_container_width=True)
 
 # ==========================================
-# 6. 主程式進入點 (側邊欄導航)
+# 6. 主程式進入點
 # ==========================================
 with st.sidebar:
     st.title("🦅 ProQuant X")
     st.markdown("---")
-    
-    # 這裡就是把兩個程式分開的關鍵
     module = st.radio("選擇系統模組", ["📊 資產戰情室", "🤖 自動交易機器人"])
-    
     st.markdown("---")
     st.caption("系統狀態: Online")
     if st.button("清除快取 (重整)"):
         st.cache_data.clear()
         st.rerun()
 
-# 根據選擇渲染不同模組
 if module == "📊 資產戰情室":
     render_dashboard()
 elif module == "🤖 自動交易機器人":
